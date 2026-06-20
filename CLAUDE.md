@@ -78,3 +78,101 @@ SSB64 stores assets in an internal file table. New/modified files (textures `.rg
 - Comments use `//` (bass syntax). Register/value annotations are conventionally aligned in a trailing comment column (`// t0 = ...`).
 - Hex constants are `0x`-prefixed; the codebase mixes RAM addresses (`0x80...`) and ROM offsets freely — be careful which a given value is. `origin` = ROM offset, `base` = RAM address.
 - The full user-facing feature list and settings-profile defaults live in `readme.md`; consult it to understand what a toggle/feature is supposed to do before changing it.
+
+---
+
+# Move Buffer feature — development log & design notes
+
+This section documents the **Move Buffer** feature (`src/MoveBuffer.asm` + the `Move Buffer` gameplay toggle), how it was built and debugged, and a proposal for a more advanced version. It is intended both as a record and as a worked example of how to reverse-engineer and hook the SSB64 input/action pipeline.
+
+## 1. What was done, and the reasoning behind it
+
+The goal was to add a Smash Ultimate–style **input/move buffer** to Smash Remix: when you press an action button slightly before your character can act (e.g. during jumpsquat or landing lag), the press is remembered for a short window and the move comes out on the first frame the character becomes interruptible. Ultimate's buffer is **9 frames** (a 9-frame early-input window; people sometimes say "10" because that's the 9-frame window plus the first actionable frame). The feature was made **adjustable 0–9 frames** via a new gameplay toggle, placed next to `Z-Cancel`.
+
+Chronology / key decisions:
+
+- **Reference behavior.** Confirmed Ultimate's hit-buffer is 9 frames and that it has two mechanisms (a press/"hit" buffer and a hold buffer). We implemented the press-buffer style, made the window a 0–9 toggle.
+- **Two independent parts.** (a) the menu toggle — well-understood, low risk; (b) the engine that actually persists the input — the hard part requiring reverse-engineering of where input is read and where a character becomes "actionable."
+- **Engine reverse-engineering.** SSB64 has no single global "actionable" flag; actionability is per-action (IASA-style) and lives inside each action's update/interrupt logic. The per-player update is `ftMainProcUpdate` (RAM `0x800E1260`), dispatched per object per frame by the object-update dispatcher at `0x8000A518` (already hooked by `Speed.process_update_`). Player input lives in the player struct: `0x01BC` = buttons held, `0x01BE` = buttons **pressed** (the edge-triggered mask every move's interrupt logic reads), `0x000D` = port, `0x0020` = control type (0 = human), `0x0024` = current action id. The global controller struct is `Joypad.struct` = `0x80045228` (10 bytes/port: held `+0x00`, pressed `+0x02`, …).
+- **Three implementation attempts** (the first two failed on hardware with "no buffer at all"):
+  1. Hooked the object dispatcher (`Speed.process_update_`) and wrote the player struct's `0x01BE` *before* `ftMainProcUpdate`. **Failed:** `0x01BE` is rewritten at the start of `ftMainProcUpdate`, overwriting our injection.
+  2. Same hook, but wrote the **global** controller struct's *pressed* field instead. **Failed:** the player's `0x01BE` is not copied from the global *pressed* field at all.
+  3. **Disassembled the vanilla input routine from `original.z64`** (this was the turning point — see below) and discovered `0x01BE` is *recomputed every frame by edge detection on the held buttons*. Re-hooked at the exact instruction **after** `0x01BE` is finalized and **before** the action logic reads it (`0x800E134C`), injecting directly into `0x01BE`. **Worked.**
+- **Verification by disassembly.** Since the environment can't run the emulator/hardware, the decisive debugging step was writing a small MIPS disassembler (RAM→ROM delta for this segment is `0x80084800`, i.e. ROM offset = RAM − `0x80084800`) and reading `ftMainProcUpdate`'s input block directly. The critical finding:
+  ```
+  800e12ec: lhu  a3,0x0000(a0)   // a3 = HELD buttons (controller +0x00), NOT pressed (+0x02)
+  800e131c: xor  t7,a1,t6        // pressed = (cur_held ^ prev_held) & cur_held  (edge detect)
+  800e1320: and  v1,t7,a1        //   prev_held read from player 0x01BC
+  800e1334/44/48: sh ...,0x0002(v0)  // store computed pressed -> player 0x01BE
+  800e134c: lhu  a0,0x0000(v0)   // first instruction AFTER 0x01BE is finalized  <-- our hook
+  ```
+  This is why writing the *pressed* field (player or global) before this point did nothing. It also showed `0x800E134C` is on the **control-type-0 (human) path only** (CPUs branch away at `0x800E12B4`), so a hook there never runs for CPUs.
+- **Consumption / double-trigger avoidance.** An early version cleared the buffer on *any* action-id change, which killed the buffer exactly at the jumpsquat→airborne transition (where the move should fire). The final design keeps buffering through **non-attack** actions (id `< 0xA6` = `Action.Grab`) and clears once an **attack/grab/special** action (id `≥ 0xA6`) actually begins.
+- **Build gotcha learned.** Running `bass` alone produces an **unbootable** ROM (bad header checksum → emulator throws `N64System.cpp Line 680` on start). Always run the full sequence: `bass` → `chksum64.exe ssb64asm.z64` → `rn64crc.exe -u ssb64asm.z64` (this is what `patch.bat` does).
+
+## 2. File changes and how each helped
+
+- **`src/Toggles.asm`** — added the `entry_move_buffer` menu entry (type INT, range 0–9, default 0/off for all four profiles) immediately after `entry_z_cancel_opts`, and repointed Z-Cancel's `next` field at it. Reuses the existing `string_table_volume` so it displays `0`–`9`. *Why it helped:* exposes the adjustable window in Gameplay Settings; the entry macro auto-handles profiles/save/load/rendering, and other code reads the value at `Toggles.entry_move_buffer + 0x4`.
+- **`src/MoveBuffer.asm`** (new) — the engine. Final version hooks `0x800E134C` (`OS.patch_start(0x5CB4C, 0x800E134C)`), reproducing the two overwritten instructions (`lhu a0,0x0000(v0)` and `lw t4,0x0040(a2)`). Per port it keeps a 4-byte state (`buf_mask` halfword + `buf_timer` byte). Each frame, in a non-attack state: it captures the frame's new action-relevant presses (overwriting `buf_mask`, resetting timer to N) or, on frames with no new press, ORs `buf_mask` back into `0x01BE` and decrements the timer; it clears once an attack action (id ≥ `0xA6`) starts or the timer expires. `BUFFER_MASK` (currently A|B|Z|L|R|C) selects which buttons are buffered. *Why it helped:* this is the actual buffering, and hooking at `0x800E134C` is what made injection land **after** the engine computes `0x01BE` but **before** action logic reads it — the fix that made it work.
+- **`main.asm`** — added `include "src/MoveBuffer.asm"` (before `src/Speed.asm`). *Why it helped:* gets the new file assembled into the ROM, with `Toggles`/`Joypad` already included earlier so its references resolve.
+- **`src/Speed.asm`** — *temporarily* hooked (attempt #1/#2 added a `jal MoveBuffer.process_` inside `process_update_`) and then **reverted** to its original form once the dispatcher approach proved wrong. It currently carries no Move Buffer code; this is noted only so the dead-end isn't re-attempted.
+
+Composition note: `0x800E134C` is also the address that `css/DpadFunctions.asm` jumps back to (`j 0x800E134C`) after its dpad-macro processing, *with `0x01BE` already stored*. So the two hooks compose: DpadFunctions finalizes `0x01BE`, jumps to `0x800E134C` (now our `j inject_`), we read/inject `0x01BE`, then reproduce the original instructions and continue at `0x800E1354`. No address overlap (DpadFunctions owns `0x800E1330`/`0x800E1378`; we own `0x800E134C`).
+
+### Current limitations (by design, of the shipped version)
+
+- Single buffer slot per port; **most-recent press-frame wins** (a new press overwrites the stored mask and resets the timer). It is **not** a priority queue and does not retain the full window of inputs — see the proposal below.
+- Same-frame simultaneous presses are all injected together; which move results is decided by the **vanilla engine's** native input precedence, not by us.
+- A press made while *already inside* an attack/grab/special action (id ≥ `0xA6`) is not buffered, so "chain the next move during your current move" is not covered (would need true per-action IASA data).
+- Only the pressed mask (`0x01BE`) is re-asserted, not held (`0x01BC`).
+
+## 3. Proposal — priority-queue buffer with an Ultimate-style priority list
+
+The shipped version is "latest press wins." A more faithful Ultimate-style buffer would **retain every buffered frame's input across the window** and, on the actionable frame, **choose the highest-priority option present anywhere in the window** — so a defensive option (e.g. shield/dodge) input *earlier* still beats an attack input *later*, instead of recency deciding.
+
+> Note: the exact Ultimate priority ordering should be verified against documented behavior before shipping; the ordering below is a reasonable starting point and is meant to live in a single, easily-reordered table.
+
+### Data structures (per port)
+
+Replace the single `buf_mask`/`buf_timer` slot with a small ring buffer of the last N frames of input:
+
+```
+buffer_window[port]: N entries (N = max window = 9), each:
+    0x00 (halfword) - action-relevant pressed bitmask for that frame (pressed & BUFFER_MASK)
+    0x02 (byte)     - stick X for that frame   (optional, for directional moves)
+    0x03 (byte)     - stick Y for that frame   (optional)
+write_index[port]   - rolling index, advances each frame
+```
+
+(Stick X/Y are stored because dodge vs. roll vs. spot-dodge, and tilt vs. smash, depend on stick direction; storing them lets the chosen option be injected with the correct direction. If kept simple, omit them and rely on the live stick.)
+
+### Per-frame record
+
+At the same `0x800E134C` hook, while in a non-attack state (id `< 0xA6`):
+- Read `0x01BE` (this frame's freshly-computed pressed mask) and the stick (`0x01C2`/`0x01C3`).
+- Store `{pressed & BUFFER_MASK, stickX, stickY}` into `buffer_window[port][write_index]`; advance `write_index` (mod N). Entries older than the current window length N (the toggle value) are treated as expired.
+
+### Priority resolution + injection
+
+Each frame, compute the **single highest-priority action category** present in the live window (newest N entries), then inject only that category's buttons (plus its stored stick if used) into `0x01BE`. The engine then performs that move on the first interruptible frame. Proposed priority table (highest first), keyed by SSB64 buttons:
+
+| Priority | Category        | Buttons (SSB64)             | Notes |
+|----------|-----------------|-----------------------------|-------|
+| 1        | Shield / Dodge  | `L` (0x20), `R` (0x10)      | roll/spot-dodge/air-dodge with stick dir |
+| 2        | Grab            | `Z` (0x2000)                | |
+| 3        | Jump            | C-buttons (0x000F)          | SSB64/Remix C = jump |
+| 4        | Special         | `B` (0x4000)                | |
+| 5        | Attack          | `A` (0x8000)                | jab/tilt/smash/aerial resolved by stick+engine |
+
+Resolution algorithm: iterate the priority table top-to-bottom; for the first category whose button mask appears in **any** live window entry, inject that category's buttons and stop. This yields "earlier dodge beats later attack," matching the described Ultimate behavior. The specific *variant* of an attack (jab vs tilt vs smash vs aerial) is still left to the engine + stick, as today.
+
+### Consumption / clearing
+
+Same as the shipped version: clear the whole window once an attack/grab/special action (id `≥ 0xA6`) begins, or let entries age out past the N-frame window.
+
+### Implementation notes & risks
+
+- Hook stays at `0x800E134C` (verified correct injection point); only the per-port state and the resolution step change.
+- Register budget at that hook is tight (must preserve `a0`,`a1`,`a2`,`a3`,`v0`; `t0`-`t9`/`at` are usable, `t3`-`t6`/`v1` are clobbered by the continuation). A ring-buffer scan + priority lookup may want a small subroutine (save/restore registers) rather than inline code.
+- The category-by-button mapping cleanly distinguishes the cross-button priorities (dodge vs grab vs jump vs special vs attack); it cannot by itself distinguish within-`A` variants — that's fine, the engine resolves those.
+- Verify the priority order against actual Ultimate behavior and play-test; keep the table isolated so it can be reordered without touching the scan logic.
