@@ -119,7 +119,9 @@ Chronology / key decisions:
 
 Composition note: `0x800E134C` is also the address that `css/DpadFunctions.asm` jumps back to (`j 0x800E134C`) after its dpad-macro processing, *with `0x01BE` already stored*. So the two hooks compose: DpadFunctions finalizes `0x01BE`, jumps to `0x800E134C` (now our `j inject_`), we read/inject `0x01BE`, then reproduce the original instructions and continue at `0x800E1354`. No address overlap (DpadFunctions owns `0x800E1330`/`0x800E1378`; we own `0x800E134C`).
 
-### Current limitations (by design, of the shipped version)
+### Current limitations (of the FIRST shipped version)
+
+> ⚠️ Several of these were changed by later work — see **§4 (Iteration log)** for the current behavior. This list documents the original single-slot version for history.
 
 - Single buffer slot per port; **most-recent press-frame wins** (a new press overwrites the stored mask and resets the timer). It is **not** a priority queue and does not retain the full window of inputs — see the proposal below.
 - Same-frame simultaneous presses are all injected together; which move results is decided by the **vanilla engine's** native input precedence, not by us.
@@ -176,3 +178,45 @@ Same as the shipped version: clear the whole window once an attack/grab/special 
 - Register budget at that hook is tight (must preserve `a0`,`a1`,`a2`,`a3`,`v0`; `t0`-`t9`/`at` are usable, `t3`-`t6`/`v1` are clobbered by the continuation). A ring-buffer scan + priority lookup may want a small subroutine (save/restore registers) rather than inline code.
 - The category-by-button mapping cleanly distinguishes the cross-button priorities (dodge vs grab vs jump vs special vs attack); it cannot by itself distinguish within-`A` variants — that's fine, the engine resolves those.
 - Verify the priority order against actual Ultimate behavior and play-test; keep the table isolated so it can be reordered without touching the scan logic.
+
+## 4. Iteration log — changes after the first working version
+
+Everything below happened **after** §1–§3 were written. The single-slot version described in §1/§2 has been substantially reworked in `src/MoveBuffer.asm`; the priority-queue idea in §3 is still a proposal, though its "store the full controller frame" notion was partially adopted (a single captured frame, not the whole window). Use this section as the source of truth for current behavior.
+
+### 4.0 Clarifying Q&A (no code; informed the changes below)
+- **Not a priority queue.** Confirmed the design is a single per-port slot where the most-recent press-frame wins (overwrite + timer reset). Same-frame simultaneous presses are all injected and the **vanilla engine's** native precedence resolves them — we impose no ordering.
+- **When the buffer "updates."** The hook runs every frame, but it only *captures/arms* on a frame with a new action-relevant press; on no-input frames it *ticks down and re-injects*. Holding a button does not re-capture (pressed is edge-triggered), so holding doesn't keep resetting the timer.
+- **Dodges weren't being cleared.** Rolls/spot-dodge/air-dodge have action ids **below** `0xA6` (`RollF`/`RollB` = `0x9C`/`0x9D`; Remix spot-dodge reuses `DamageHigh2` `0x26`, air-dodge reuses `DamageLow3` `0x2D`), so the original "clear when action ≥ 0xA6" never treated them as consumed. This observation later drove the roll fix in §4.2.
+
+### 4.1 DK Giant Punch bug → capture-anywhere + full-frame + `used`/`seen` consumption
+**Problem reported:** buffering a normal attack during the last frames of DK's neutral special did nothing, even though jump→aerial worked. **Cause:** the special's action id is ≥ `0xA6`, and the original rule cleared (and blocked capture) whenever action ≥ `0xA6`. **Why "just clear when the move is used" isn't trivial:** there's no "move came out" event — it can only be inferred from the action id changing (seen a frame late), and the buffer can't know which action id its buttons will resolve to (depends on stick/state/character). So consumption is necessarily heuristic.
+
+**Implemented redesign** (`process_` in `src/MoveBuffer.asm`):
+- **Capture in any state** (removed the "don't buffer while ≥ 0xA6" block) → lets you buffer during an attack/special's recovery (DK Giant Punch).
+- **Store the full controller frame**, not just buttons: per-port state grew to **16 bytes** — `mask`(h, 0x00), `timer`(b, 0x02), `used`(b, 0x03), `stickX`(b, 0x04), `stickY`(b, 0x05), `seen`(b, 0x06), pad(0x07), `buf_action`(w, 0x08). On inject, both the buttons **and** the stick are replayed so the buffered move resolves to the intended variant/direction (e.g. a forward-air stays forward-air even if the stick returned to neutral). The held mask (`0x01BC`) is deliberately **not** replayed (avoids buffered charge/hold).
+- **`used` flag + `buf_action` + `seen` flag** drive consumption. `seen` is set once an "actionable-ish" state is observed since capture. Consumption (`used` → clear) fires when the action becomes an attack-type action (≥ `0xA6`, **excluding** landing-lag) that is **either different from `buf_action` OR reached after `seen`**. The `seen` term handles "buffer the same move you were already in" (e.g. jab during jab), which a pure "different action" test misses.
+- **Edge-case fix A — landing lag excluded.** `LandingAir` actions (`0xD6`–`0xDB`) are ≥ `0xA6` but are not "a move came out", so they're excluded from `used` and treated as bufferable. This lets a move buffer out of an aerial's landing lag.
+- **Edge-case fix B — same-move via `seen`** (above).
+- **Hook mechanism updated:** `inject_` now wraps the call in `OS.save_registers()` / `OS.restore_registers()` and `jal process_` (so `process_` can use any register), then reproduces the two overwritten vanilla instructions (`lhu a0,0x0000(v0)`, `lw t4,0x0040(a2)`). Still at `0x800E134C`.
+
+### 4.2 Roll regression → peak-deflection stick tracking + roll consumption
+**Problem reported:** at higher buffer values, sideways **rolls** would sometimes come out as a plain **shield** (inconsistent vs. 0 buffer). **Two causes:** (1) replaying the **frozen press-frame stick** — often only partway through its travel — can fall below the roll deflection threshold → shield; (2) rolls are `< 0xA6`, so they weren't marked `used`, and the buffer kept re-asserting "R pressed" every frame, disrupting the shield→roll transition.
+
+**Implemented fixes:**
+- **Peak-deflection stick tracking.** On each inject frame, the stored stick is updated toward the **strongest deflection seen during the window**, per axis (branchless `abs` + magnitude compare), and that peak is replayed. So a buffered roll keeps full deflection (→ roll) while still surviving the stick returning to neutral (keeps the §4.1 directional fix).
+- **Roll consumption.** Added explicit detection of `RollF`/`RollB` (`0x9C`/`0x9D`) to the `used` check (constants `ROLL_F`/`ROLL_B`), so the buffer stops re-injecting once a sideways dodge starts. Scoped to rolls only, so buffering a move *out of* shield still works. (Spot/air dodge can't be added cleanly because they reuse damage action ids.)
+
+### 4.3 Current behavior & remaining limitations (supersedes §2's list)
+Working: buffer out of jumpsquat/landing/shield/hitstun; buffer during attack/special recovery (DK Giant Punch); correct directional moves (stick replay + peak tracking); buffer out of aerial landing lag; same-move buffering; consistent rolls at high buffer. Toggle `0` is fully inert.
+
+Remaining limitations / things to watch:
+- Still a **single slot**, recency-wins (the §3 priority-queue is still unbuilt). Same-frame ties resolved by the engine.
+- **Spot-dodge / air-dodge** reuse damage action ids (`0x26`/`0x2D`), so they can't be cleanly detected as `used` like rolls can.
+- **Held mask** is not replayed (no buffered smash-charge / special-hold).
+- **Same-move with no actionable pass-through** (result == `buf_action` and `seen` never set) could re-fire within the ≤N-frame window — rare, bounded by the timer.
+- Possible residual: repeated shield-press during the `ShieldOn` frames *before* a roll triggers; if rolls still occasionally drop to shield, the next step is to gate injection while already in shield.
+- Peak stick tracking may favor the stronger/earlier deflection if the player deliberately changes direction within the window.
+
+### 4.4 Process notes
+- Every rebuild used the full sequence (`bass` → `chksum64 ssb64asm.z64` → `rn64crc -u ssb64asm.z64`) so the ROM stays bootable; both CI linters (`sequential_branches.py`, `check_duplicate_action_edit.py`) were run after each change and pass. All testing of *behavior* was done by the user on N64 hardware (the dev environment can't run a controller).
+- Debugging the "no effect" failures was ultimately solved by **disassembling `original.z64`** (RAM→ROM delta `0x80084800` for this segment) to read the vanilla input routine directly — the lesson being to verify engine assumptions against the actual ROM rather than inferring from comments.
