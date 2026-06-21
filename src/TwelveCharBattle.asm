@@ -463,8 +463,8 @@ scope TwelveCharBattle {
         OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
         lli     t1, VsRemixMenu.mode.TOURNEY
         lli     t2, NUM_SLOTS              // default 24 (12CB)
-        bnel    t0, t1, pc() + 8           // if not Tournament, keep 24
-        lli     t2, MAX_SLOTS             // Tournament -> 32 (delay slot, likely)
+        beql    t0, t1, pc() + 8           // if Tournament, override to 32
+        lli     t2, MAX_SLOTS             // Tournament -> 32 (delay slot, runs only when equal)
         li      t0, slot_count
         sw      t2, 0x0000(t0)            // store runtime slot count
 
