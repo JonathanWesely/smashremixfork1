@@ -3650,9 +3650,11 @@ scope CharacterSelect {
         sw      a0, 0x0008(sp)              // ~
 
         lli     s0, 0x0000                  // s0 = slot index = 0
-        lli     s1, NUM_SLOTS               // s1 = NUM_SLOTS
-        bnezl   a0, pc() + 8                // if 12cb mode, use correct slot count
-        lli     s1, TwelveCharBattle.NUM_SLOTS
+        lli     s1, NUM_SLOTS               // s1 = NUM_SLOTS (non-12cb CSS)
+        beqz    a0, _have_slot_count        // PHASE B: 12cb/Tournament -> runtime slot count
+        nop
+        OS.read_word(TwelveCharBattle.slot_count, s1) // s1 = 24 (12CB) or 32 (Tournament)
+        _have_slot_count:
         li      s2, id_table_pointer
         lw      s2, 0x0000(s2)              // s2 = id_table
         li      s3, Render.file_pointer_1   // s3 = base address of character portraits file

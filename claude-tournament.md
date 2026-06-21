@@ -31,10 +31,40 @@ Stamina.asm:303/Rage.asm:45. The dev environment cannot run the ROM — **all be
 hardware-tested by the user.** Smoke-test 12CB after every Tournament change.
 
 ### Status
-Phases **A, C, D = DONE** (build-verified + HW-confirmed). Phases **E.3 + E.4 = DONE** (build-verified;
-needs HW confirm). Phase **B** (32 slots) and Phase **E** parts **E.1/E.2** remain. Branch:
-**`tourney-mode`** (off `master`, with `movebufferoption` merged so it also carries Move Buffer).
-`master` is the clean fallback.
+Branch: **`tourney-mode`** (off `master`, with `movebufferoption` merged so it also carries Move
+Buffer). `master` is the clean fallback. Build with the full sequence (`bass` → `chksum64` →
+`rn64crc`); run both linters + overlap checker after each change (see "Build & verify" above).
+
+**Done:**
+- Phases **A, C, D** — DONE, HW-confirmed.
+- Eliminated-character **darken/lock in Tournament** bugfix — DONE, HW-confirmed (user notes minor
+  bugs remain to chase later — see that bugfix section).
+- **E.3** (Tournament doesn't touch Stocks Remaining / Best Character stats) — DONE, build-verified,
+  **needs HW confirm**.
+- **E.4** (save-on-exit / mode-aware `config` reset via `last_owner_mode`) — DONE, build-verified,
+  **needs HW confirm**.
+- **Phase B Stage 1** (MAX_SLOTS, runtime `slot_count`, grown buffers) — DONE, HW-confirmed inert.
+- **Phase B Stage 2a** (parameterized table macro, extended `layout.u` to 32, grew `p1`/`p2`, added
+  32-distinct `layout.t` + tables) — DONE, build-verified.
+- **Phase B Stage 2b** (live tables → `layout.t`, `update_character_set_` no-op for Tournament,
+  loop conversions to `slot_count`, `get_character_id_` bounds to 32) — DONE, build-verified,
+  **needs HW test**. Tournament should now show **32 distinct selectable portraits**.
+
+**Known follow-ups (where to resume — details in each phase section below):**
+1. **HW-test Phase B Stage 2b**: do all 32 portraits show + are the 8 new ones selectable by both
+   players? Where do the extra 8 land (they currently auto-render as a **4th row**)? Is 12CB still
+   identical? Are E.3/E.4 confirmed (stats not corrupted; save-on-exit works)?
+2. **Phase B Stage 2c — positions (HW-tuned):** move the 8 extra slots to the "center" where the
+   stats were and stop any overlap with the stock counter / RESET button. Currently auto-positioned
+   as a 4th row via per-column `portrait_x_position` + `row*height`.
+3. **Phase B — in-game custom editing (deferred):** grid is the fixed auto-filled roster; cycling a
+   slot to a different character in-game needs `set_portrait_` redirect (write to the `layout.t`
+   live tables) + default-to-custom for Tournament. (User wanted all slots editable.)
+4. **Phase B Stage 3:** remove the leftover "Character Set" selector display for Tournament.
+5. **E.1** (real "Tournament" button texture) and **E.2** (T1/T2 title banners) — **asset tasks**;
+   workflow + exact offsets-to-report in **`ClaudeInsertingTourneyMenuTextures.md`**. E.2 also needs
+   the `update_css_header_` `tournament_type` branch + removal of the temp Phase D top-center label.
+6. **Minor elimination-darken/lock bugs** the user flagged for "later".
 
 ---
 
@@ -152,7 +182,82 @@ Both build-verified; linters pass; overlap checker shows only the 3 known confli
 
 ---
 
-## Phase B — 32 slots + remove stats (NOT STARTED; hardest, heavy HW iteration)
+## Phase B — 32 slots + remove stats (IN PROGRESS; hardest, heavy HW iteration)
+
+**Design locked (user):** Tournament gets a **dedicated 32-distinct layout** (the 24 grid slots
+un-mirrored + 8 more in the center); 12CB keeps its shared 24-mirror layout untouched. All
+Tournament slots default to the per-side **custom** state (editable to any character). Claude
+auto-fills the roster; user tweaks later. Implemented in **build-verified stages**:
+
+- **Stage 1 — foundation (DONE, build-verified):**
+  - `constant MAX_SLOTS(32)` (TCB ~32) + runtime `slot_count` word (default 24).
+  - `before_css_setup_` sets `slot_count` = 32 for Tournament / 24 for 12CB on every CSS entry.
+  - Grew shared buffers to MAX_SLOTS: `config.stocks_by_portrait_id` (`fill 24`→`fill MAX_SLOTS`),
+    the live `id_table` (`fill MAX_SLOTS`) and `portrait_offset_table` (`fill MAX_SLOTS * 4`).
+  - **Inert/behavior-preserving:** nothing reads `slot_count` yet and 24-slot code ignores the
+    extra buffer space, so 12CB **and** Tournament still run as 24-slot. Pure groundwork.
+
+- **Stage 2a — data (DONE, build-verified):**
+  - Parameterized `create_portrait_tables(layout_type, layout, count)` (3-arg worker + 2-/1-arg
+    delegates passing NUM_SLOTS); `while {count}` instead of `while NUM_SLOTS`.
+  - Extended `layout.u` to 32 (slots 25-32 placeholders); grew `p1`/`p2` via
+    `create_portrait_tables(p1/p2, u, MAX_SLOTS)` (12CB still reads first 24 = unchanged).
+  - Added dedicated 32-DISTINCT `layout.t` + `create_portrait_tables(t, t, MAX_SLOTS)`:
+    id_table_t / portrait_offset_table_t / portrait_id_table_t. Roster: base12 + remix12 +
+    SONIC/SHEIK/MARINA/DEDEDE/GOEMON/BANJO/CRASH/PEACH. Builds clean (all symbols valid).
+  - Still inert: nothing reads the 32-tables/`slot_count` at runtime yet.
+
+- **Stage 2b — runtime wiring (DONE, build-verified; needs HW test). Approach taken:** point the
+  live tables directly at the dedicated 32-distinct `layout.t` tables for Tournament (single shared
+  full grid), rather than copying per-port. Specifics:
+  - `force_ffa_and_stock_` (TCB ~1889): for Tournament set `id_table_pointer`/
+    `portrait_id_table_pointer`/`portrait_offset_table_pointer` → `id_table_t`/`portrait_id_table_t`/
+    `portrait_offset_table_t`. 12CB still uses the standalone tables. `portrait_x_position` shared.
+  - `update_character_set_` (TCB ~2654): **no-op for Tournament** (early-return) so preset-cycle /
+    redraw callers never overwrite the static `t` grid. Also skipped its two calls in `setup_`.
+  - Loop conversions to `slot_count`: `before_css_setup_` stock refill, the T1 survivor refill, and
+    `CharacterSelect.draw_portraits_` count (restructured out of the delay slot; uses
+    `TwelveCharBattle.slot_count` for 12cb/Tournament, `CharacterSelect.NUM_SLOTS` otherwise).
+  - `get_character_id_` grid bounds: raised to MAX_SLOTS for Tournament (uses the existing `t3`
+    Tournament flag) so slots 24-31 are clickable.
+  - **No stale-`slot_count` risk in non-Tournament CSS:** draw uses it only when the 12cb flag is
+    set; bounds only when the Tournament flag is set; refills only run in 12cb/Tournament paths.
+  - **Works now:** Tournament shows 32 distinct, selectable-by-either-player portraits with stocks/
+    elimination across all 32. **Deferred:** in-game custom editing of slots (live points at `t`, so
+    `set_portrait_` redirect + default-to-custom still needed) — the grid is currently the fixed
+    auto-filled roster.
+
+- **Stage 2c — positions (positions auto for now; HW-tune):** `draw_portraits_` derives X from the
+  per-column `portrait_x_position` and Y from `row*height`, so 32 renders as a **4×8 grid** (slots
+  24-31 = a 4th row) with no new position data. Likely needs HW tuning to move those 8 to the
+  "center" where the stats were and to avoid overlapping the stock counter / RESET button.
+
+### (superseded) earlier Stage 2b plan / KEY DESIGN FINDING:
+  12CB's custom model is **per-port halves**: `p1` table = left half (cols 0-3), `p2` = right half
+  (cols 4-7). `update_character_set_` (TCB ~2573) copies a set into the live tables **per-port in
+  fixed top/mid/bottom 4-portrait chunks** — hardwired to the 24-slot half-grid. `set_portrait_` /
+  `get_portrait_id_` likewise pick p1/p2 by port. **Tournament (Phase C) is ONE shared full grid
+  both players pick from**, so it does NOT fit the per-port-halves model. Plan for 2b:
+  1. Treat Tournament's grid as a **single shared 32-slot table** (use `p1`'s custom table as the
+     grid for both ports). Add a Tournament population path that copies all 32 (from `layout.t` /
+     `id_table_t` + `portrait_offset_table_t`) into the live `id_table`/`portrait_offset_table`
+     and builds `portrait_id_table` (32) — bypassing the per-half `update_character_set_` chunk copy.
+  2. On **mode change** (reuse E.4 `last_owner_mode`): entering Tournament copy `layout.t` → p1
+     (and set default to custom); entering 12CB restore p1/p2 to `u` so 12CB custom is unchanged.
+  3. Convert the runtime slot loops `NUM_SLOTS`/`-1`/`NUM_PORTRAITS` → `slot_count` (TCB ~410,
+     1272/1393/1541/1597, 2514, 2708, 4445/4469/4498, 5633, 1147; plus CharacterSelect
+     `draw_portraits_` ~3653/3655 `TwelveCharBattle.NUM_SLOTS`). Do this together with 1-2 so
+     Tournament never iterates past populated data.
+  4. Default Tournament to custom (`config.p1/p2.character_set` = custom index = NUM_PRESETS).
+
+- **Stage 2c — positions/render (after 2b; HW-tuned):** give slots 24-31 coordinates (the 8
+  "center" portraits where stats were). `portrait_x_position` is per-column; center slots need
+  explicit coords. Expect HW tuning.
+
+- **Stage 3 — cleanup (NOT STARTED):** remove the remaining "Character Set" selector display for
+  Tournament (E.3 already removed Stocks Remaining + Best Character display/writes).
+
+### Original Phase B notes (reference)
 
 Goal: 32-character tournament. Keep the 24 grid slots, add **8 more portraits in the center**
 where the stats text currently is, and remove all stats text (keep the RESET button). Per the

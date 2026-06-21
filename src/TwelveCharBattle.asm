@@ -30,6 +30,19 @@ scope TwelveCharBattle {
     constant TOURNAMENT_1(0)
     constant TOURNAMENT_2(1)
 
+    // @ Description
+    // Phase B: maximum CSS slot capacity. 12CB uses NUM_SLOTS (24); Tournament uses 32 (the
+    // 24 grid slots + 8 extra portraits in the center). All shared data buffers are sized to
+    // MAX_SLOTS so Tournament's extra slots fit; 12CB simply ignores the top 8.
+    constant MAX_SLOTS(32)
+
+    // @ Description
+    // Phase B: runtime slot count -- 24 for 12CB, 32 for Tournament. Set every time we enter
+    // the CSS in before_css_setup_. Runtime slot/portrait loops read this instead of the
+    // compile-time NUM_SLOTS so the same code serves both modes.
+    slot_count:
+    dw 24
+
     macro define_match_struct() {
         define n(1)
         while {n} < 24 {
@@ -80,8 +93,9 @@ scope TwelveCharBattle {
         }
 
         // This will hold the remaining stocks for the character at each portrait slot
+        // (Phase B: sized to MAX_SLOTS so Tournament's 32 slots fit; 12CB uses the first 24)
         stocks_by_portrait_id:
-        fill 24, 0x03
+        fill MAX_SLOTS, 0x03
     }
 
     // @ Description
@@ -117,6 +131,17 @@ scope TwelveCharBattle {
             define slot_22(FOX)
             define slot_23(PIKACHU)
             define slot_24(JIGGLYPUFF)
+            // Phase B: slots 25-32 give layout.u MAX_SLOTS capacity so the custom p1/p2 tables
+            // (cloned from u) hold 32. 12CB only ever table-gens/reads the first 24, so these are
+            // inert for 12CB; Tournament overwrites p1/p2 from layout.t at runtime.
+            define slot_25(SONIC)
+            define slot_26(SHEIK)
+            define slot_27(MARINA)
+            define slot_28(DEDEDE)
+            define slot_29(GOEMON)
+            define slot_30(BANJO)
+            define slot_31(CRASH)
+            define slot_32(PEACH)
         }
         scope j {
             // row 1
@@ -234,6 +259,47 @@ scope TwelveCharBattle {
             // define slot_23(MTWO)
             // define slot_24(MARTH)
         // }
+        // Phase B: dedicated 32-DISTINCT Tournament layout (no mirroring). Copied into the
+        // custom p1/p2 tables when entering Tournament. Auto-filled roster (user can tweak):
+        // base 12 + remix 12 + 8 extras. Slots 25-32 are the 8 "center" portraits.
+        scope t {
+            // row 1
+            define slot_1(LUIGI)
+            define slot_2(MARIO)
+            define slot_3(DONKEY)
+            define slot_4(LINK)
+            define slot_5(SAMUS)
+            define slot_6(CAPTAIN)
+            define slot_7(NESS)
+            define slot_8(YOSHI)
+            // row 2
+            define slot_9(KIRBY)
+            define slot_10(FOX)
+            define slot_11(PIKACHU)
+            define slot_12(JIGGLYPUFF)
+            define slot_13(DRM)
+            define slot_14(GND)
+            define slot_15(YLINK)
+            define slot_16(FALCO)
+            // row 3
+            define slot_17(DSAMUS)
+            define slot_18(WARIO)
+            define slot_19(LUCAS)
+            define slot_20(BOWSER)
+            define slot_21(WOLF)
+            define slot_22(CONKER)
+            define slot_23(MTWO)
+            define slot_24(MARTH)
+            // center 8
+            define slot_25(SONIC)
+            define slot_26(SHEIK)
+            define slot_27(MARINA)
+            define slot_28(DEDEDE)
+            define slot_29(GOEMON)
+            define slot_30(BANJO)
+            define slot_31(CRASH)
+            define slot_32(PEACH)
+        }
     }
 
     // @ Description
@@ -249,15 +315,15 @@ scope TwelveCharBattle {
     float32 -1.8                              // column 8
 
     // @ Description
-    // CSS characters in order of portrait ID
+    // CSS characters in order of portrait ID (Phase B: MAX_SLOTS capacity)
     id_table:
-    fill NUM_SLOTS
+    fill MAX_SLOTS
     OS.align(4)
 
     // @ Description
-    // Portrait offsets in order of portrait ID
+    // Portrait offsets in order of portrait ID (Phase B: MAX_SLOTS capacity)
     portrait_offset_table:
-    fill NUM_SLOTS * 4
+    fill MAX_SLOTS * 4
     OS.align(4)
 
     // @ Description
@@ -266,7 +332,9 @@ scope TwelveCharBattle {
     fill Character.NUM_CHARACTERS, 0xFF
     OS.align(4)
 
-    macro create_portrait_tables(layout_type, layout) {
+    // Phase B: {count} controls how many slots the table holds (NUM_SLOTS for 12CB sets,
+    // MAX_SLOTS for the Tournament 32-slot custom + source tables).
+    macro create_portrait_tables(layout_type, layout, count) {
         // @ Description
         // Holds the valid character count for this type
         global variable character_count_{layout_type}(0)
@@ -275,7 +343,7 @@ scope TwelveCharBattle {
         // CSS characters in order of portrait ID
         id_table_{layout_type}:
         evaluate n(0)
-        while NUM_SLOTS > {n} {
+        while {count} > {n} {
             evaluate n({n} + 1)
             db Character.id.{layout.{layout}.slot_{n}}
 
@@ -293,7 +361,7 @@ scope TwelveCharBattle {
         // Portrait offsets in order of portrait ID
         portrait_offset_table_{layout_type}:
         evaluate n(0)
-        while NUM_SLOTS > {n} {
+        while {count} > {n} {
             evaluate n({n} + 1)
             dw CharacterSelect.portrait_offsets.{layout.{layout}.slot_{n}}
         }
@@ -308,7 +376,7 @@ scope TwelveCharBattle {
         OS.align(4)
         pushvar origin, base
         evaluate n(0)
-        while NUM_SLOTS > {n} {
+        while {count} > {n} {
             evaluate n({n} + 1)
             origin portrait_id_table_{layout_type}_origin + Character.id.{layout.{layout}.slot_{n}}
             db {n} - 1
@@ -319,8 +387,12 @@ scope TwelveCharBattle {
         pullvar base, origin
     }
 
+    macro create_portrait_tables(layout_type, layout) {
+        create_portrait_tables({layout_type}, {layout}, NUM_SLOTS)
+    }
+
     macro create_portrait_tables(layout_type) {
-        create_portrait_tables({layout_type}, {layout_type})
+        create_portrait_tables({layout_type}, {layout_type}, NUM_SLOTS)
     }
 
     create_portrait_tables(u)       // create vanilla character set tables
@@ -328,8 +400,9 @@ scope TwelveCharBattle {
     create_portrait_tables(pv)      // create polygon vanilla character set tables
     create_portrait_tables(r)       // create remix character set tables
     // create_portrait_tables(pr)      // create polygon remix character set tables
-    create_portrait_tables(p1, u)   // create p1's custom character set tables
-    create_portrait_tables(p2, u)   // create p2's custom character set tables
+    create_portrait_tables(p1, u, MAX_SLOTS)   // p1's custom set: MAX_SLOTS capacity (12CB uses first 24)
+    create_portrait_tables(p2, u, MAX_SLOTS)   // p2's custom set: MAX_SLOTS capacity (12CB uses first 24)
+    create_portrait_tables(t, t, MAX_SLOTS)    // Tournament 32-distinct source layout (copied into p1/p2 on entry)
 
     character_set_table:
     // id table     // portrait offset table     // portrait id table     // custom preset cycle index
@@ -385,6 +458,16 @@ scope TwelveCharBattle {
         addiu   sp, sp, -0x0010             // allocate stack space
         sw      ra, 0x0004(sp)              // save registers
 
+        // PHASE B: set the runtime slot count -- 32 for Tournament (24 grid + 8 center),
+        // 24 for 12CB. Done on every CSS entry so slot/portrait loops use the right count.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        lli     t2, NUM_SLOTS              // default 24 (12CB)
+        bnel    t0, t1, pc() + 8           // if not Tournament, keep 24
+        lli     t2, MAX_SLOTS             // Tournament -> 32 (delay slot, likely)
+        li      t0, slot_count
+        sw      t2, 0x0000(t0)            // store runtime slot count
+
         // CARRYOVER FIX (E.4-revised): on a FRESH entry from the VS menu, clear the shared
         // battle state (status / current game / per-portrait stocks) ONLY when the owning mode
         // changed (12CB <-> Tournament) so eliminations & remaining stocks don't carry over
@@ -407,7 +490,7 @@ scope TwelveCharBattle {
         sw      t1, 0x0008(t0)             // current_game = -1
         lw      t1, 0x0004(t0)             // t1 = num_stocks
         li      t2, config.stocks_by_portrait_id
-        lli     t3, NUM_SLOTS
+        OS.read_word(slot_count, t3)       // PHASE B: refill all active slots (24 or 32)
         _refill_stocks:
         sb      t1, 0x0000(t2)             // refill this portrait's stocks
         addiu   t3, t3, -0x0001
@@ -1144,7 +1227,10 @@ scope TwelveCharBattle {
         _skip_port_shift:
 
         // return id.NONE if index is too large for table
-        lli     t1, NUM_PORTRAITS           // t1 = NUM_PORTRAITS
+        // PHASE B: Tournament (t3 != 0) has up to MAX_SLOTS portraits; others use NUM_PORTRAITS
+        lli     t1, NUM_PORTRAITS           // t1 = NUM_PORTRAITS (24)
+        bnezl   t3, pc() + 8                // if Tournament, raise the bound to MAX_SLOTS
+        lli     t1, MAX_SLOTS               // t1 = 32 (delay slot, likely)
         sltu    t2, t0, t1                  // if (t0 < t1), t2 = 0
         beqz    t2, _end                    // explained above lol
         lli     v0, Character.id.NONE       // also explained above lol
@@ -1804,17 +1890,36 @@ scope TwelveCharBattle {
         lbu     t1, 0x0003(s2)              // original line 3
 
         // set up important pointers
+        // PHASE B: Tournament is one shared 32-distinct full grid, so point the live tables
+        // directly at the dedicated layout.t tables. 12CB uses the standalone tables (populated
+        // per-port by update_character_set_).
+        OS.read_word(VsRemixMenu.vs_mode_flag, t1) // t1 = vs_mode_flag
+        lli     t0, VsRemixMenu.mode.TOURNEY
+        beq     t1, t0, _tourney_pointers
+        nop
+
         li      t0, CharacterSelect.id_table_pointer
         li      t1, id_table
         sw      t1, 0x0000(t0)
-
         li      t0, CharacterSelect.portrait_id_table_pointer
         li      t1, portrait_id_table
         sw      t1, 0x0000(t0)
-
         li      t0, CharacterSelect.portrait_offset_table_pointer
         li      t1, portrait_offset_table
+        b       _pointers_done
+        sw      t1, 0x0000(t0)              // (delay slot)
+
+        _tourney_pointers:
+        li      t0, CharacterSelect.id_table_pointer
+        li      t1, id_table_t
         sw      t1, 0x0000(t0)
+        li      t0, CharacterSelect.portrait_id_table_pointer
+        li      t1, portrait_id_table_t
+        sw      t1, 0x0000(t0)
+        li      t0, CharacterSelect.portrait_offset_table_pointer
+        li      t1, portrait_offset_table_t
+        sw      t1, 0x0000(t0)
+        _pointers_done:
 
         li      t0, CharacterSelect.portrait_x_position_pointer
         li      t1, portrait_x_position
@@ -2555,6 +2660,14 @@ scope TwelveCharBattle {
         sw      v1, 0x0014(sp)              // ~
         sw      s1, 0x0018(sp)              // ~
         sw      a1, 0x001C(sp)              // ~
+
+        // PHASE B: Tournament uses a fixed, dedicated 32-distinct grid (layout.t) wired directly
+        // as the live tables, with no preset cycling. Re-populating would overwrite it, so this
+        // routine is a no-op for Tournament.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _end
+        nop
 
         // update index and string
         li      t0, character_set_string_table
@@ -5215,6 +5328,13 @@ scope TwelveCharBattle {
         jal     Render.create_room_
         lui     s4, 0x4366                  // s4 = lry
 
+        // PHASE B: Tournament's live grid already points at the dedicated 32-distinct layout.t
+        // tables (set in force_ffa_and_stock_), so skip the per-port half population which would
+        // overwrite them. 12CB populates its standalone tables per port as usual.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _skip_char_set_populate
+        nop
         lli     a0, 0x0000                  // a0 = p1
         lli     a1, OS.FALSE                // a1 = increment? no
         jal     update_character_set_
@@ -5224,6 +5344,7 @@ scope TwelveCharBattle {
         lli     a1, OS.FALSE                // a1 = increment? no
         jal     update_character_set_
         lli     a2, OS.FALSE                // a2 = redraw? no
+        _skip_char_set_populate:
 
         jal     CharacterSelect.draw_portraits_
         lli     a0, OS.TRUE                 // a0 = 12cb flag
@@ -5630,7 +5751,7 @@ scope TwelveCharBattle {
         li      t1, config.stocks_by_portrait_id
         li      t3, config.num_stocks
         lw      t3, 0x0000(t3)              // t3 = full stock count
-        lli     t2, NUM_SLOTS
+        OS.read_word(slot_count, t2)       // PHASE B: loop over all active slots (24 or 32)
         lli     t0, 0x00FF                  // t0 = eliminated marker (0-based -1)
         _t1_refill:
         lbu     v0, 0x0000(t1)             // current stock for this portrait
