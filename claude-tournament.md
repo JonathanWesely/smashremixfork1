@@ -31,9 +31,10 @@ Stamina.asm:303/Rage.asm:45. The dev environment cannot run the ROM — **all be
 hardware-tested by the user.** Smoke-test 12CB after every Tournament change.
 
 ### Status
-Phases **A, C, D = DONE** (build-verified + HW-confirmed). Phase **B** (32 slots) and Phase
-**E** (cleanup, 4 parts) remain. Branch: **`tourney-mode`** (off `master`, with
-`movebufferoption` merged so it also carries Move Buffer). `master` is the clean fallback.
+Phases **A, C, D = DONE** (build-verified + HW-confirmed). Phases **E.3 + E.4 = DONE** (build-verified;
+needs HW confirm). Phase **B** (32 slots) and Phase **E** parts **E.1/E.2** remain. Branch:
+**`tourney-mode`** (off `master`, with `movebufferoption` merged so it also carries Move Buffer).
+`master` is the clean fallback.
 
 ---
 
@@ -123,6 +124,32 @@ game-struct `starting_stocks` (set from `vs.pN+0x0B`, ~TCB 5292) rather than bei
 `stocks_by_portrait_id`. If a T1 winner does NOT start the next match at full, trace where the
 continuing fighter's `vs.pN+0x0B` is set for 12CB and reset it to `num_stocks` for T1 there.
 
+## Bug fix — eliminated-character darken/lock in Tournament (DONE, HW-confirmed; minor bugs remain)
+
+Reported: a beaten fighter stayed selectable (not darkened/locked) in BOTH Tournament modes,
+while 12CB works. Decision: track elimination **per-slot** (only the exact slot played darkens)
+and lock that slot for **both** players.
+
+Root causes (two):
+1. **Selection-lock looked up the wrong slot.** `prevent_defeated_char_select_` (TCB ~2963) and
+   `treat_selected_defeated_chars_as_unselected_` (~3526) call `get_stocks_remaining_for_char_`
+   → `get_valid_portrait_id_` (~1309). That mapper still used 12CB's per-side `+4/-4` half-grid
+   shift and was the one Phase C never updated. In Tournament (full grid) it returned a half-grid
+   twin slot, whose stock was never the one that took the loss, so the fighter was never seen as
+   defeated. **Fix:** prepend a Tournament branch to `get_valid_portrait_id_` that returns the
+   actually-selected slot from CSS struct `0x00B4` (identical to the Phase C block in
+   `get_portrait_id_`), gated to `vs_mode_flag == TOURNEY` on the VS CSS. Darkening itself
+   (`draw_disabled_rectangle_` ~2891) already keys off the rendered slot's own stock, so the
+   played slot was darkening correctly — the lock was the broken half.
+2. **T1 survivor-reset used the wrong stock encoding.** `stocks_by_portrait_id` is 0-based:
+   `0xFF` (= -1) = eliminated, `0` = 1 stock left. The Phase D T1 loop (~5559) triggered on
+   `t5 == 0` and treated `0` as "eliminated", so it (a) fired a stock too early and (b) reset
+   `0xFF` slots back to full — **un-eliminating** previously darkened/locked fighters in T1.
+   **Fix:** trigger on `t5 == -1` (real elimination) and skip slots equal to `0xFF` in the
+   refill loop. T2/12CB paths unchanged.
+
+Both build-verified; linters pass; overlap checker shows only the 3 known conflicts.
+
 ---
 
 ## Phase B — 32 slots + remove stats (NOT STARTED; hardest, heavy HW iteration)
@@ -160,6 +187,10 @@ the shared code; mitigate with the per-phase 12CB smoke test + overlap checker.
 
 ## Phase E — Cleanup (NOT STARTED; 4 independent parts)
 
+> **Asset workflow for E.1 + E.2:** see `ClaudeInsertingTourneyMenuTextures.md` (the 3 textures
+> to create, which ROM files they go in — `0x006` button label, `0x0A06` title banners — the
+> append-only injector steps, and the offsets to report back so Claude can finish the ASM).
+
 ### E.1 — Real "Tournament" button texture
 The Remix Modes "Tournament" button still shows the **Tug of War** placeholder texture
 (`remix_menu_button_table` Tournament row references offset `0x000093B8`). Create/inject a
@@ -177,26 +208,53 @@ between two title textures (`0x2C18` "Smashketball 1" / `0x2E88` "Smashketball 2
 "Tournament 1" vs "Tournament 2" title image in both `_vs` and `_results` (currently both use
 the `0x2048` placeholder). **Requires creating the two title textures** (asset task, like E.1).
 
-### E.3 — Tournament must not touch the "Stocks Remaining" / "Best Character" stats
-These stats (per side) belong to 12CB and we are not using them in Tournament; Tournament must
-not write or corrupt them. They live in `config.p1`/`config.p2` (`stocks_remaining`,
-`best_character_pointer` + TKO counters, TCB ~50–90) and are updated by 12CB's scoring path
-(e.g. `update_stocks_remaining_` decrements the per-side total; `set_best_characters_` in
-`setup_` ~5194). Gate every such write so it is **skipped for Tournament** (`vs_mode_flag ==
-TOURNEY`), for **both** sides, so 12CB's stats are never affected by a tournament session.
-(Phase B removes the stat *display*; E.3 removes the stat *writes* — do both.)
+### E.3 — Tournament must not touch the "Stocks Remaining" / "Best Character" stats — DONE (build-verified, needs HW confirm)
+These per-side stats belong to 12CB and Tournament shares `config`, so a tournament session was
+corrupting them. All gated to `vs_mode_flag == TOURNEY`:
+- **Writes (the actual fix):**
+  - `update_stocks_remaining_` (TCB ~5562): the per-side `stocks_remaining` decrement + the
+    `STATUS_COMPLETE` set are now skipped for Tournament (new `_skip_side_total` branch). The
+    per-slot `stocks_by_portrait_id` write below it is **kept** — that's the elimination data
+    Tournament needs. Side effect: Tournament's `config.status` never reaches COMPLETE (fine; it
+    has no "whole-match-complete" concept). Note `update_stock_fields_` still *initializes*
+    `stocks_remaining`, but 12CB re-initializes it on entry (status NOT_STARTED), so it self-heals.
+  - `set_best_characters_` (TCB ~3998): early-return for Tournament right after the status check,
+    so none of the `best_character`/TKO fields are written.
+- **Display (done together, since a null `best_character_pointer` draw would be unsafe; also
+  pre-satisfies part of Phase B's display removal):** in `setup_` the "Stocks Remaining" draws
+  (`_skip_stocks_remaining`) and the "Best Character" block incl. the `set_best_characters_` call
+  (`_skip_best_character`) are skipped for Tournament. The "Character Set" selector is **kept**
+  (it's a selection control, not a 12CB stat; Phase B reworks it with the 32-slot layout).
+- **Left alone:** `handle_reset_` (the RESET button Phase B keeps) still resets these to defaults —
+  it's a deliberate user reset, not the scoring-path corruption E.3 targets.
 
-### E.4 — Fix: exiting to main menu no longer saves data (12CB AND Tournament)
-Regression: exiting to the main menu now fails to save data for **both** 12CB and Tournament.
-**Likely cause:** the Phase D carryover fix in `before_css_setup_` (the
-`previous_screen == VS_GAME_MODE_MENU` reset of `config`) — added to stop Tournament state
-from bleeding into 12CB. This revealed that 12CB and Tournament are **not actually separate**
-(they share `config`), so the reset also clobbers data that should persist/save.
-Investigate the 12CB save/persist path and the exact entry conditions under which `config` is
-reset; make the reset narrow enough to not destroy saved data, OR give Tournament its own state
-separate from 12CB's `config`. **Broader implication to verify later:** 12CB and Tournament
-sharing `config` means stock/elimination/stat/save state is entangled — confirm true separation
-of the two modes' persistent data as part of this fix.
+Build clean; linters pass; overlap checker shows only the 3 known conflicts.
+
+### E.4 — Fix: exiting to main menu no longer saves data (12CB AND Tournament) — DONE (build-verified, needs HW confirm)
+Regression cause confirmed: the Phase D carryover fix in `before_css_setup_` reset the shared
+`config` on **every** fresh entry from the VS menu (`previous_screen == VS_GAME_MODE_MENU`),
+regardless of mode. Because 12CB and Tournament **share** `config`, backing out to the VS menu
+and returning to the *same* mode wiped that mode's session data (stocks/eliminations/stats) — i.e.
+it didn't "save".
+
+**Fix taken** (the "narrow the reset" option, not a full state split): added a new word
+`TwelveCharBattle.last_owner_mode` (init `-1`) that records which `VsRemixMenu.vs_mode_flag`
+currently owns `config`. In `before_css_setup_`, on a fresh menu entry we now read the mode being
+entered, store it as the new owner, and **only reset `config` when the mode actually changed**
+(`beq current, last_owner -> skip reset`). So:
+- Re-entering the SAME mode (12CB→12CB or Tournament→Tournament) preserves its session data (save). 
+- Switching modes (12CB↔Tournament) still resets, so no carryover between the two.
+- Re-entries between matches (`previous_screen != VS_GAME_MODE_MENU`) are still left alone.
+
+Registers: the new check uses `t4`/`t5` (plus reusing `t0`) ahead of the existing `t0`-`t3` reset
+block; branches are followed by `nop` (delay-slot safe). Build clean, both linters pass, overlap
+checker shows only the 3 known pre-existing conflicts.
+
+**Still open (broader implication):** 12CB and Tournament remain entangled via the shared `config`
+(stocks/eliminations/stats). This fix makes the *reset* mode-aware but does not give Tournament a
+truly separate persistent state — revisit if deeper separation is needed (e.g. independent
+best-character/stat history per mode). E.3 (stop Tournament writing the 12CB stats) is the next
+step toward that separation.
 
 ---
 

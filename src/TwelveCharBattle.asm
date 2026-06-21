@@ -372,18 +372,34 @@ scope TwelveCharBattle {
     dw 3
 
     // @ Description
+    // Mode (VsRemixMenu.vs_mode_flag) that currently owns the shared `config` state.
+    // 12CB and Tournament share `config`; we only wipe it on a fresh menu entry when the
+    // mode actually changes, so backing out to the VS menu and returning to the SAME mode
+    // preserves that mode's session data (the E.4 save fix). -1 = no owner yet (force reset).
+    last_owner_mode:
+    dw -1
+
+    // @ Description
     // Runs when enterting the CSS
     scope before_css_setup_: {
         addiu   sp, sp, -0x0010             // allocate stack space
         sw      ra, 0x0004(sp)              // save registers
 
-        // CARRYOVER FIX: on a FRESH entry from the VS menu, clear the shared battle state
-        // (status / current game / per-portrait stocks) so eliminations & remaining stocks
-        // don't carry over between 12CB and Tournament (or across re-entries). Re-entries
-        // from the CSS/fight (between matches) are left alone.
+        // CARRYOVER FIX (E.4-revised): on a FRESH entry from the VS menu, clear the shared
+        // battle state (status / current game / per-portrait stocks) ONLY when the owning mode
+        // changed (12CB <-> Tournament) so eliminations & remaining stocks don't carry over
+        // between the two modes. Re-entering the SAME mode preserves its session data so that
+        // backing out to the VS menu and returning still "saves" it (this is the E.4 fix).
+        // Re-entries from the CSS/fight (between matches) are left alone entirely.
         OS.read_byte(Global.previous_screen, t0) // t0 = previous screen
         lli     t1, Global.screen.VS_GAME_MODE_MENU
         bne     t0, t1, _skip_state_reset   // not a fresh menu entry -> keep state
+        nop
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = mode being entered
+        li      t4, last_owner_mode
+        lw      t5, 0x0000(t4)              // t5 = mode that currently owns `config`
+        sw      t0, 0x0000(t4)              // remember current mode as the new owner
+        beq     t0, t5, _skip_state_reset   // same mode -> preserve its session data (save)
         nop
         li      t0, config                  // t0 = config base (status at +0x00)
         sw      r0, 0x0000(t0)              // status = NOT_STARTED
@@ -1297,6 +1313,35 @@ scope TwelveCharBattle {
         sw      t2, 0x000C(sp)              // ~
         sw      at, 0x0010(sp)              // ~
 
+        // TOURNAMENT (Phase C follow-up): elimination is tracked per-slot on the full grid
+        // (no per-side +4/-4 half mapping). Return the actually-selected/hovered slot stored
+        // at CSS struct 0x00B4 -- same as get_portrait_id_ -- so the defeated-character checks
+        // (get_stocks_remaining_for_char_) read the real played slot's stock for EITHER player.
+        // Without this they read a half-grid twin and never see the loss, so the beaten fighter
+        // stayed selectable in both Tournament modes.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _not_tourney_vpid   // not Tournament -> normal per-port mapping
+        nop
+        li      at, Global.current_screen
+        lbu     at, 0x0000(at)             // at = current screen
+        lli     t1, 0x0010                 // VS CSS screen id
+        bne     at, t1, _not_tourney_vpid   // only on the VS CSS
+        nop
+        li      at, CharacterSelect.CSS_PLAYER_STRUCT
+        bnezl   a1, pc() + 8               // if player 2, use p2's CSS player struct
+        addiu   at, at, 0x00BC             // at = p2's CSS player struct
+        lw      v0, 0x00B4(at)             // v0 = stored selected portrait_id
+        bltz    v0, _not_tourney_vpid       // not a valid selection -> normal mapping
+        nop
+        li      t0, CharacterSelect.id_table_pointer
+        lw      t0, 0x0000(t0)             // t0 = live id_table
+        addu    t0, t0, v0                 // &id_table[selected slot]
+        lbu     t0, 0x0000(t0)             // t0 = character at the selected slot
+        beq     t0, a0, _end                // matches this character -> return that exact slot
+        nop
+
+        _not_tourney_vpid:
         li      t1, config.p1.character_set // t1 = p1's character set index
         li      t2, config.p2.character_set
         bnezl   a1, pc() + 8                // if player 2, set t1 to p2's character set index
@@ -3956,6 +4001,13 @@ scope TwelveCharBattle {
         beqz    t0, _end                    // if not started, skip
         nop
 
+        // E.3: best-character stats belong to 12CB. Tournament shares `config` and does not use
+        // these stats, so skip computing/writing them entirely (prevents corrupting 12CB's data).
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     at, VsRemixMenu.mode.TOURNEY
+        beq     t0, at, _end                // Tournament -> don't write best-character stats
+        nop
+
         li      at, config.current_game
         lw      t0, 0x0000(at)              // at = current game
         li      t1, config.p1.match         // t1 = p1 match struct
@@ -5176,10 +5228,15 @@ scope TwelveCharBattle {
         jal     CharacterSelect.draw_portraits_
         lli     a0, OS.TRUE                 // a0 = 12cb flag
 
-        // Stocks Remaining
+        // Stocks Remaining (12CB per-side stat -- E.3: not drawn for Tournament)
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _skip_stocks_remaining // Tournament -> skip the per-side stat
+        nop
         Render.draw_string(0x1E, GROUP_ALWAYS, string_stocks_remaining, Render.NOOP, 0x43200000, 0x42FC0000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
         Render.draw_number(0x1E, GROUP_ALWAYS, config.p1.stocks_remaining, Render.update_live_string_, X_P1, 0x430C0000, 0xB00000FF, 0x3F600000, Render.alignment.CENTER)
         Render.draw_number(0x1E, GROUP_ALWAYS, config.p2.stocks_remaining, Render.update_live_string_, X_P2, 0x430C0000, 0x4040C0FF, 0x3F600000, Render.alignment.CENTER)
+        _skip_stocks_remaining:
 
         // Character Set
         Render.draw_string(0x1E, GROUP_NOT_STARTED, string_character_set, Render.NOOP, 0x43200000, 0x43200000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
@@ -5190,7 +5247,12 @@ scope TwelveCharBattle {
         Render.draw_texture_at_offset(0x1E, GROUP_NOT_STARTED, 0x8013C4A0, 0xECE8, Render.NOOP, 0x431F0000, 0x432F8000, 0xFF0000FF, 0x303030FF, 0x3F200000)
         Render.draw_texture_at_offset(0x1E, GROUP_NOT_STARTED, 0x8013C4A0, 0xEDC8, Render.NOOP, 0x435D0000, 0x432F8000, 0xFF0000FF, 0x303030FF, 0x3F200000)
 
-        // Best Character
+        // Best Character (12CB per-side stat -- E.3: not computed or drawn for Tournament,
+        // which shares `config`; drawing a null best_character_pointer would also be unsafe)
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _skip_best_character // Tournament -> skip best-character stat
+        nop
         jal     set_best_characters_
         nop
         Render.draw_string(0x1E, GROUP_STARTED, string_best_character, Render.NOOP, 0x43200000, 0x43200000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
@@ -5206,6 +5268,7 @@ scope TwelveCharBattle {
 
         Render.draw_number(0x1E, GROUP_STARTED, config.p1.best_character_tkos_for, Render.update_live_string_, X_P1, 0x433B0000, 0xB00000FF, 0x3F480000, Render.alignment.CENTER)
         Render.draw_number(0x1E, GROUP_STARTED, config.p2.best_character_tkos_for, Render.update_live_string_, X_P2, 0x433B0000, 0x4040C0FF, 0x3F480000, Render.alignment.CENTER)
+        _skip_best_character:
 
         // TOURNAMENT (Phase D): live "Tournament 1/2" label near the title (Tournament only)
         OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
@@ -5520,6 +5583,13 @@ scope TwelveCharBattle {
         bnezl   a0, pc() + 8                // if p2, then set t2 to config.p2.match
         or      t2, r0, t3                  // t2 = config.p2.match
 
+        // E.3: the per-SIDE stocks_remaining total and the COMPLETE status are 12CB scoring.
+        // Tournament shares `config`, so writing them would corrupt 12CB's saved stats; Tournament
+        // tracks elimination per-slot (stocks_by_portrait_id, below) instead. Skip for Tournament.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _skip_side_total    // Tournament -> don't touch the per-side total
+        nop
         lw      t3, -0x0004(t2)             // t3 = stocks remaining
         addiu   t3, t3, -0x0001             // t3--
         sw      t3, -0x0004(t2)             // update stocks remaining
@@ -5528,6 +5598,7 @@ scope TwelveCharBattle {
         lli     t1, config.STATUS_COMPLETE
         beqzl   t3, pc() + 8                // if no more stocks, then battle is over
         sw      t1, 0x0000(t0)              // so update status
+        _skip_side_total:
 
         li      t0, config.current_game
         lw      at, 0x0000(t0)              // at = current game
@@ -5540,10 +5611,14 @@ scope TwelveCharBattle {
         addu    t0, t0, v0                  // t0 = address of stock count for this portrait_id
         sb      t5, 0x0000(t0)              // update stock count (drops normally during the match)
 
-        // TOURNAMENT 1 (Phase D): a fighter hitting 0 stocks ends the match. At that point
-        // reset every SURVIVING character back to full stocks for their next match
-        // (eliminated characters stay at 0). Tournament 2 / 12CB retain remaining stocks.
-        bnez    t5, _end                    // not an elimination -> nothing to reset
+        // TOURNAMENT 1 (Phase D): when a fighter is ELIMINATED (loses their last stock) the
+        // bracket match ends; reset every SURVIVING character back to full stocks for their next
+        // match while leaving eliminated characters eliminated (so they stay darkened/locked).
+        // Tournament 2 / 12CB retain remaining stocks.
+        // ENCODING: stocks_by_portrait_id is 0-based -- 0xFF (= -1) is eliminated, 0 is 1 stock
+        // left. t5 is the new 0-based count, so an elimination is t5 == -1, NOT t5 == 0.
+        addiu   t1, r0, -0x0001
+        bne     t5, t1, _end                // not an elimination (still has stocks) -> nothing to reset
         nop
         OS.read_word(VsRemixMenu.vs_mode_flag, t1)
         lli     t2, VsRemixMenu.mode.TOURNEY
@@ -5556,9 +5631,10 @@ scope TwelveCharBattle {
         li      t3, config.num_stocks
         lw      t3, 0x0000(t3)              // t3 = full stock count
         lli     t2, NUM_SLOTS
+        lli     t0, 0x00FF                  // t0 = eliminated marker (0-based -1)
         _t1_refill:
         lbu     v0, 0x0000(t1)             // current stock for this portrait
-        beqz    v0, _t1_refill_next         // eliminated (0) -> leave eliminated
+        beq     v0, t0, _t1_refill_next     // eliminated (0xFF) -> leave eliminated
         nop
         sb      t3, 0x0000(t1)             // survivor -> reset to full
         _t1_refill_next:
