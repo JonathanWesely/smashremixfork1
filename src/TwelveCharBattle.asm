@@ -20,6 +20,16 @@ scope TwelveCharBattle {
     twelve_cb_flag:
     dw OS.FALSE
 
+    // @ Description
+    // Tournament stock mode (only meaningful when vs_mode_flag == mode.TOURNEY):
+    //   0 = Tournament 1 -> every match starts each fighter at full num_stocks
+    //   1 = Tournament 2 -> fighters retain remaining stocks between matches (12CB-style)
+    // Toggled on the CSS via the repurposed Free-for-all/Team-Battle control.
+    tournament_type:
+    dw 0
+    constant TOURNAMENT_1(0)
+    constant TOURNAMENT_2(1)
+
     macro define_match_struct() {
         define n(1)
         while {n} < 24 {
@@ -366,6 +376,28 @@ scope TwelveCharBattle {
     scope before_css_setup_: {
         addiu   sp, sp, -0x0010             // allocate stack space
         sw      ra, 0x0004(sp)              // save registers
+
+        // CARRYOVER FIX: on a FRESH entry from the VS menu, clear the shared battle state
+        // (status / current game / per-portrait stocks) so eliminations & remaining stocks
+        // don't carry over between 12CB and Tournament (or across re-entries). Re-entries
+        // from the CSS/fight (between matches) are left alone.
+        OS.read_byte(Global.previous_screen, t0) // t0 = previous screen
+        lli     t1, Global.screen.VS_GAME_MODE_MENU
+        bne     t0, t1, _skip_state_reset   // not a fresh menu entry -> keep state
+        nop
+        li      t0, config                  // t0 = config base (status at +0x00)
+        sw      r0, 0x0000(t0)              // status = NOT_STARTED
+        addiu   t1, r0, -0x0001
+        sw      t1, 0x0008(t0)             // current_game = -1
+        lw      t1, 0x0004(t0)             // t1 = num_stocks
+        li      t2, config.stocks_by_portrait_id
+        lli     t3, NUM_SLOTS
+        _refill_stocks:
+        sb      t1, 0x0000(t2)             // refill this portrait's stocks
+        addiu   t3, t3, -0x0001
+        bnez    t3, _refill_stocks
+        addiu   t2, t2, 0x0001             // next portrait (delay slot)
+        _skip_state_reset:
 
         li      at, Global.vs.game_mode     // at = game_mode address
         lli     t0, 0x0002                  // t0 = STOCK
@@ -1043,6 +1075,15 @@ scope TwelveCharBattle {
         beqzl   t1, pc() + 8                // if not HMN, don't initialize portrait_id to -1 (prevents CPU autoposition bug with white flash)
         sw      t0, 0x00B4(a3)              // initialize portrait_id
 
+        // TOURNAMENT (Phase C): let both players reach the full 24-slot grid
+        OS.read_word(VsRemixMenu.vs_mode_flag, t3) // t3 = vs_mode_flag
+        lli     t0, VsRemixMenu.mode.TOURNEY
+        xor     t3, t3, t0                 // t3 = 0 if Tournament
+        sltiu   t3, t3, 0x0001             // t3 = 1 if Tournament, else 0
+
+        lli     t0, RIGHT_GRID_END_X        // Tournament / port-1: full right end
+        bnez    t3, _greater_than_check     // Tournament -> full right end for both ports
+        nop
         lli     t0, LEFT_GRID_END_X
         bnezl   a0, _greater_than_check     // if port 0, then use left grid end x
         lli     t0, RIGHT_GRID_END_X        // otherwise, use right grid end x
@@ -1052,7 +1093,9 @@ scope TwelveCharBattle {
         bnez    t1, _end                    // if x pos to big, skip to end
         lli     v0, Character.id.NONE       // and return id.NONE
 
-        lli     t0, LEFT_GRID_START_X
+        lli     t0, LEFT_GRID_START_X       // Tournament / port-0: full left start
+        bnez    t3, _less_than_check        // Tournament -> full left start for both ports
+        nop
         bnezl   a0, _less_than_check        // if port 0, then use left grid start x
         lli     t0, RIGHT_GRID_START_X      // otherwise, use right grid start x
 
@@ -1077,9 +1120,12 @@ scope TwelveCharBattle {
         mflo    t0                          // t0 = (row * NUM_COLUMNS)
         addu    t0, t0, t1                  // t0 = index
 
-        // if port 1 (2P), then shift portrait ID over 4 slots
+        // if port 1 (2P), then shift portrait ID over 4 slots (Tournament: skip -> full grid)
+        bnez    t3, _skip_port_shift
+        nop
         bnezl   a0, pc() + 8
         addiu   t0, 0x0004                  // t0 = index for 2P
+        _skip_port_shift:
 
         // return id.NONE if index is too large for table
         lli     t1, NUM_PORTRAITS           // t1 = NUM_PORTRAITS
@@ -1133,6 +1179,32 @@ scope TwelveCharBattle {
         sw      t2, 0x000C(sp)              // ~
         sw      at, 0x0010(sp)              // ~
 
+        // TOURNAMENT (Phase C): keep the token on the slot that was actually selected
+        // (recorded at 0x00B4) with no per-port remap, so P1's pick doesn't snap to the
+        // left twin (and P2's to the right).
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _not_tourney_pid    // not Tournament -> normal per-port mapping
+        nop
+        li      at, Global.current_screen
+        lbu     at, 0x0000(at)             // at = current screen
+        lli     t1, 0x0010                  // VS CSS screen id
+        bne     at, t1, _not_tourney_pid    // only on the VS CSS
+        nop
+        li      at, CharacterSelect.CSS_PLAYER_STRUCT
+        bnezl   a1, pc() + 8                // if player 2, use p2's CSS player struct
+        addiu   at, at, 0x00BC             // at = p2's CSS player struct
+        lw      v0, 0x00B4(at)             // v0 = stored selected portrait_id
+        bltz    v0, _not_tourney_pid        // not a valid selection -> normal mapping
+        nop
+        li      t0, CharacterSelect.id_table_pointer
+        lw      t0, 0x0000(t0)             // t0 = live id_table
+        addu    t0, t0, v0                 // &id_table[selected slot]
+        lbu     t0, 0x0000(t0)             // t0 = character at the selected slot
+        beq     t0, a0, _end                // matches this character -> return that exact slot
+        nop
+
+        _not_tourney_pid:
         li      t1, config.p1.character_set // t1 = p1's character set index
         li      t2, config.p2.character_set
         bnezl   a1, pc() + 8                // if player 2, set t1 to p2's character set index
@@ -1398,6 +1470,15 @@ scope TwelveCharBattle {
         sw      t2, 0x000C(sp)              // ~
         sw      at, 0x0010(sp)              // ~
 
+        // TOURNAMENT (Phase C): no per-side restriction -- any character is valid for any port
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _check_set         // not Tournament -> normal per-side check
+        nop
+        b       _end                       // Tournament -> always valid
+        lli     v0, OS.TRUE                // (delay slot) return TRUE
+
+        _check_set:
         li      t1, config.p1.character_set // t1 = p1's character set index
         li      t2, config.p2.character_set
         bnezl   a0, pc() + 8                // if player 2, set t1 to p2's character set index
@@ -1877,6 +1958,9 @@ scope TwelveCharBattle {
         _vs:
         li      t4, VsRemixMenu.vs_mode_flag
         lw      t4, 0x0000(t4)              // t4 = vs_mode_flag
+        lli     t5, VsRemixMenu.mode.TOURNEY
+        beql    t4, t5, _end_vs             // if Tournament, use placeholder title (12CB image for now)
+        lli     t9, 0x2048                  // t9 = "12-Char. Battle" image (Tournament placeholder)
         lli     t5, VsRemixMenu.mode.TWELVE_CB
         beql    t4, t5, _end_vs             // if 12cb mode, use custom image
         lli     t9, 0x2048                  // t9 = offset to "12-Char. Battle" image
@@ -1907,6 +1991,9 @@ scope TwelveCharBattle {
         beqz    t1, _end_results            // if default mode, use normal image
         nop                                 // otherwise, use custom image
 
+        lli     t5, VsRemixMenu.mode.TOURNEY
+        beql    t1, t5, _12cb_results       // if Tournament, use placeholder title (12CB image for now)
+        lli     t8, 0x2048                  // t8 = "12-Char. Battle" image (Tournament placeholder)
         lli     t5, VsRemixMenu.mode.TWELVE_CB
         beql    t1, t5, _12cb_results       // if 12cb mode, use custom image
         lli     t8, 0x2048                  // t8 = offset to "12-Char. Battle" image
@@ -5120,6 +5207,16 @@ scope TwelveCharBattle {
         Render.draw_number(0x1E, GROUP_STARTED, config.p1.best_character_tkos_for, Render.update_live_string_, X_P1, 0x433B0000, 0xB00000FF, 0x3F480000, Render.alignment.CENTER)
         Render.draw_number(0x1E, GROUP_STARTED, config.p2.best_character_tkos_for, Render.update_live_string_, X_P2, 0x433B0000, 0x4040C0FF, 0x3F480000, Render.alignment.CENTER)
 
+        // TOURNAMENT (Phase D): live "Tournament 1/2" label near the title (Tournament only)
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _skip_tourney_label // not Tournament -> no label
+        nop
+        Render.register_routine(update_tournament_type_pointer_)
+        nop
+        Render.draw_string_pointer(0x1E, GROUP_ALWAYS, tournament_type_pointer, Render.update_live_string_, 0x43200000, 0x42100000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
+        _skip_tourney_label:
+
         // Reset button
         Render.draw_texture_at_offset(0x1E, GROUP_STARTED, 0x8013C4A0, 0x187A8, Render.NOOP, 0x43080000, 0x434E0000, 0xFFFFFFFF, 0x000000FF, 0x3F800000)
         li      t0, reset_button_pointer
@@ -5229,6 +5326,27 @@ scope TwelveCharBattle {
     string_character_set_custom:; String.insert("Custom")
     string_best_character:; String.insert("Best Character")
     string_tkos:; String.insert("TKOs")
+    string_tournament_1:; String.insert("Tournament 1")
+    string_tournament_2:; String.insert("Tournament 2")
+
+    // @ Description
+    // Live pointer to the current "Tournament 1/2" string (for the CSS title label).
+    tournament_type_pointer:; dw string_tournament_1
+
+    // @ Description
+    // Per-frame routine: point tournament_type_pointer at the correct string so the live
+    // CSS label reflects the current toggle. Registered on the CSS in setup_ (Tournament).
+    scope update_tournament_type_pointer_: {
+        OS.read_word(tournament_type, t0)   // t0 = tournament_type
+        li      t1, string_tournament_1
+        beqz    t0, _set                    // Tournament 1 -> "Tournament 1"
+        nop
+        li      t1, string_tournament_2     // Tournament 2 -> "Tournament 2"
+        _set:
+        li      t0, tournament_type_pointer
+        jr      ra
+        sw      t1, 0x0000(t0)              // update pointer (delay slot)
+    }
 
     string_reset_line_1:;  String.insert("Game reset requested by  P.")
     string_reset_line_2:;  String.insert("If accepted, stock counts will be reset.")
@@ -5420,7 +5538,33 @@ scope TwelveCharBattle {
         lbu     v0, 0x0003(t2)              // v0 = portrait_id
         li      t0, config.stocks_by_portrait_id
         addu    t0, t0, v0                  // t0 = address of stock count for this portrait_id
-        sb      t5, 0x0000(t0)              // update stock count
+        sb      t5, 0x0000(t0)              // update stock count (drops normally during the match)
+
+        // TOURNAMENT 1 (Phase D): a fighter hitting 0 stocks ends the match. At that point
+        // reset every SURVIVING character back to full stocks for their next match
+        // (eliminated characters stay at 0). Tournament 2 / 12CB retain remaining stocks.
+        bnez    t5, _end                    // not an elimination -> nothing to reset
+        nop
+        OS.read_word(VsRemixMenu.vs_mode_flag, t1)
+        lli     t2, VsRemixMenu.mode.TOURNEY
+        bne     t1, t2, _end                // not Tournament
+        nop
+        OS.read_word(tournament_type, t1)
+        bnez    t1, _end                    // Tournament 2 -> retain, no reset
+        nop
+        li      t1, config.stocks_by_portrait_id
+        li      t3, config.num_stocks
+        lw      t3, 0x0000(t3)              // t3 = full stock count
+        lli     t2, NUM_SLOTS
+        _t1_refill:
+        lbu     v0, 0x0000(t1)             // current stock for this portrait
+        beqz    v0, _t1_refill_next         // eliminated (0) -> leave eliminated
+        nop
+        sb      t3, 0x0000(t1)             // survivor -> reset to full
+        _t1_refill_next:
+        addiu   t2, t2, -0x0001
+        bnez    t2, _t1_refill
+        addiu   t1, t1, 0x0001             // next portrait (delay slot)
 
         _end:
         lw      ra, 0x0004(sp)              // restore registers

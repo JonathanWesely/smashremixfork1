@@ -1353,8 +1353,14 @@ scope Smashketball {
 
             OS.read_word(VsRemixMenu.vs_mode_flag, t5) // t5 = vs_mode_flag
             lli     v0, VsRemixMenu.mode.SMASHKETBALL
-            bne     t5, v0, _end                // if not Smashketball, skip
+            beq     t5, v0, _smash_type         // Smashketball -> toggle its type
+            lli     v0, VsRemixMenu.mode.TOURNEY
+            bne     t5, v0, _end                // if not Smashketball or Tournament, skip
             nop
+            li      a2, TwelveCharBattle.tournament_type // Tournament -> toggle Tournament 1/2
+            b       _end
+            nop
+            _smash_type:
             li      a2, type                    // set a2 to type address so it gets toggled
 
             _end:
@@ -1378,8 +1384,11 @@ scope Smashketball {
             _skip_to_end:
             OS.read_word(VsRemixMenu.vs_mode_flag, t5) // t5 = vs_mode_flag
             lli     v0, VsRemixMenu.mode.SMASHKETBALL
-            bne     t5, v0, _end_skip_to_end    // if not Smashketball, skip
+            beq     t5, v0, _do_skip            // Smashketball -> skip teams logic
+            lli     v0, VsRemixMenu.mode.TOURNEY
+            bne     t5, v0, _end_skip_to_end    // if not Smashketball or Tournament, don't skip
             nop
+            _do_skip:
             j       0x80135544                  // can safely skip rest of the routine
             nop
 

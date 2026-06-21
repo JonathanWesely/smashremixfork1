@@ -16,6 +16,7 @@ scope VsRemixMenu {
         constant KOTH(0x3)
         constant SMASHKETBALL(0x4)
         constant TUG_OF_WAR(0x5)
+        constant TOURNEY(0x6)
     }
 
     page_flag:
@@ -89,13 +90,29 @@ scope VsRemixMenu {
     dw 0;           db 0x09, mode.DEFAULT,      0x1, 0x0; dh 0x4238, 0x433E; dw 0x000075B8 // Remix Modes
     constant PAGE_1_MAX(0x4)
 
+    // Page-2 text positions: each label's original text-vs-button offset applied to the
+    // tighter button_positions_p2 (so text lines up with the buttons as it did before).
     remix_menu_button_table:
     dw 0;           db 0x10, mode.TWELVE_CB,    0x1, 0x1; dh 0x4304, 0x4210; dw 0x00006760 // 12cb
-    dw 0;           db 0x10, mode.TAG_TEAM,     0x1, 0x0; dh 0x4305, 0x4292; dw 0x00007D38 // Tag Team
-    dw 0;           db 0x10, mode.KOTH,         0x1, 0x0; dh 0x42AA, 0x42E0; dw 0x000084B8 // King of the Hill
-    dw 0;           db 0x10, mode.SMASHKETBALL, 0x1, 0x0; dh 0x428E, 0x4317; dw 0x00008C38 // Smashketball
-    dw 0;           db 0x10, mode.TUG_OF_WAR,   0x1, 0x0; dh 0x4260, 0x433E; dw 0x000093B8 // Tug of War
-    constant PAGE_2_MAX(0x4)
+    dw 0;           db 0x10, mode.TAG_TEAM,     0x1, 0x0; dh 0x4309, 0x4282; dw 0x00007D38 // Tag Team
+    dw 0;           db 0x10, mode.KOTH,         0x1, 0x0; dh 0x42BC, 0x42C0; dw 0x000084B8 // King of the Hill
+    dw 0;           db 0x10, mode.SMASHKETBALL, 0x1, 0x0; dh 0x42A9, 0x42FF; dw 0x00008C38 // Smashketball
+    dw 0;           db 0x10, mode.TUG_OF_WAR,   0x1, 0x0; dh 0x4294, 0x431E; dw 0x000093B8 // Tug of War
+    dw 0;           db 0x10, mode.TOURNEY,      0x1, 0x1; dh 0x4260, 0x433E; dw 0x000093B8 // Tournament -- 0x07=1 reuses the 12CB CSS; placeholder text texture (reuses Tug of War's)
+    constant PAGE_2_MAX(0x5)
+
+    // @ Description
+    // Button graphic positions for the Remix Modes page (page 2). 6 slots, ~20%
+    // tighter spacing than the page-1 layout so the 6th button (Tournament) fits on
+    // screen. Same diagonal, scaled toward the top button. (X,Y comments in pixels.)
+    // Tune on hardware if needed.
+    button_positions_p2:
+    dh 0x42F0, 0x41F8; // 1 (120, 31)
+    dh 0x42CB, 0x4278; // 2 (101.6, 62.2)
+    dh 0x42A6, 0x42BA; // 3 (83.2, 93.4)
+    dh 0x4281, 0x42F9; // 4 (64.8, 124.6)
+    dh 0x4239, 0x431B; // 5 (46.4, 155.8)
+    dh 0x41E0, 0x433B; // 6 (28, 187)
 
     // @ Description
     // The following patches enable a new button on the VS Game Mode menu (on page 1)
@@ -122,23 +139,40 @@ scope VsRemixMenu {
         lui     v1, 0x8013                  // original line 1
         OS.patch_end()
 
-        li      t0, 0x80134940              // t0 = address of new button object pointer
-        sw      t0, 0x0010(t6)              // save it to the stack
+        li      t0, 0x80134940              // address of button[4] object pointer slot
+        sw      t0, 0x0010(t6)              // buttons[4]
+        li      t0, 0x80134944              // address of button[5] object pointer slot (Tournament)
+        sw      t0, 0x0014(t6)              // buttons[5]
 
         jr      ra
         addiu   v1, v1, 0x4980              // original line 2
 
+        // Max cursor index is page-aware: page 1 has 5 buttons (max PAGE_1_MAX),
+        // page 2 (Remix Modes) has 6 buttons (max PAGE_2_MAX) after adding Tournament.
+        // Temp regs (t8 for up; t7 for down/timer) are dead at each return point.
         _wrap_fix_up:
+        OS.read_word(page_flag, t8)         // t8 = page_flag (0 = page 1, 1 = page 2)
+        addiu   t7, r0, PAGE_1_MAX          // t7 = page 1 max index
+        bnezl   t8, pc() + 8                // if page 2, use page 2 max
+        addiu   t7, r0, PAGE_2_MAX          // t7 = page 2 max index (delay; only if page 2)
         jr      ra
-        addiu   t7, r0, 0x0004              // t7 = 4 = max button index
+        nop
 
         _wrap_fix_down:
+        OS.read_word(page_flag, t7)         // t7 = page_flag (t7 is overwritten right after return)
+        addiu   at, r0, PAGE_1_MAX          // at = page 1 max index
+        bnezl   t7, pc() + 8                // if page 2, use page 2 max
+        addiu   at, r0, PAGE_2_MAX          // at = page 2 max index (delay; only if page 2)
         jr      ra
-        addiu   at, r0, 0x0004              // at = 4 = max button index
+        nop
 
         _wrap_fix_down_timer:
+        OS.read_word(page_flag, t7)         // t7 = page_flag (dead reg here)
+        addiu   at, r0, PAGE_1_MAX - 1      // at = page 1 scroll-pause index (max - 1)
+        bnezl   t7, pc() + 8                // if page 2, use page 2 index
+        addiu   at, r0, PAGE_2_MAX - 1      // at = page 2 scroll-pause index (delay)
         jr      ra
-        addiu   at, r0, 0x0003              // at = 4 = max button index
+        nop
     }
 
     // @ Description
@@ -218,10 +252,15 @@ scope VsRemixMenu {
             jal     Render.DISPLAY_INIT_        // initialize display object
             lui     a3, 0x8000                  // a3 = display order
 
-            li      at, button_positions        // at = button_positions
-            lw      t6, 0x0020(sp)              // t6 = index in button_positions
-            sll     t6, t6, 0x0002              // t6 = offset inbutton_positions
-            addu    at, at, t6                  // at = address in button_positions
+            li      at, button_positions        // page 1 position table
+            OS.read_word(page_flag, t6)         // t6 = page_flag
+            beqz    t6, _pos_p1                  // page 1 -> button_positions
+            nop
+            li      at, button_positions_p2     // page 2 -> tighter 6-slot table
+            _pos_p1:
+            lw      t6, 0x0020(sp)              // t6 = index in position table
+            sll     t6, t6, 0x0002              // t6 = offset in position table
+            addu    at, at, t6                  // at = address in position table
             lw      a0, 0x0024(sp)              // a0 = button object
 
             lhu     a1, 0x0000(at)              // a1 = button X, unshifted
@@ -229,7 +268,7 @@ scope VsRemixMenu {
             lhu     a2, 0x0002(at)              // a2 = button Y, unshifted
             sll     a2, a2, 0x0010              // a2 = button Y
             jal     0x80132024                  // mnVSModeMakeButton()
-            addiu   a3, r0, 0x0011              // a3 = width
+            addiu   a3, r0, 0x0011              // a3 = width (original; vertical fit handled by button_positions_p2)
 
             lui     t7, 0x8013
             lw      t7, 0x4948(t7)              // t7 = cursor index
@@ -293,6 +332,16 @@ scope VsRemixMenu {
         lli     a0, 0x0002                  // a0 = 2 (Time Stock/?)
         jal     create_menu_button_
         lli     a0, 0x0003                  // a0 = 3 (VS Options/?)
+
+        // On the Remix Modes page (page 2) there is a 6th button (Tournament).
+        // This is in the custom region (not the size-fixed render patch), so it's
+        // safe to add here. Page 1 keeps only 5 buttons.
+        OS.read_word(page_flag, a0)         // a0 = page_flag
+        beqz    a0, _no_sixth               // page 1 -> no 6th button
+        nop
+        jal     create_menu_button_
+        lli     a0, 0x0005                  // a0 = 5 (Tournament, page 2 only)
+        _no_sixth:
 
         j       _return
         nop
@@ -538,6 +587,7 @@ scope VsRemixMenu {
         dw KingOfTheHill.before_css_setup_  // KOTH
         dw Smashketball.before_css_setup_   // Smashketball
         dw TugOfWar.before_css_setup_       // Tug of War
+        dw TwelveCharBattle.before_css_setup_ // Tournament (reuses 12CB framework)
     }
 
     // @ Description
@@ -620,6 +670,7 @@ scope VsRemixMenu {
         dw KingOfTheHill.leave_css_setup_   // KOTH
         dw Smashketball.leave_css_setup_    // Smashketball
         dw TugOfWar.leave_css_setup_        // Tug of War
+        dw TwelveCharBattle.leave_css_setup_ // Tournament (reuses 12CB framework)
     }
 
     // @ Description
@@ -677,6 +728,7 @@ scope VsRemixMenu {
         dw KingOfTheHill.start_match_setup_ // KOTH
         dw Smashketball.start_match_setup_  // Smashketball
         dw TugOfWar.start_match_setup_      // Tug of War
+        dw TwelveCharBattle.start_match_setup_ // Tournament (reuses 12CB framework)
     }
 
     // @ Description
