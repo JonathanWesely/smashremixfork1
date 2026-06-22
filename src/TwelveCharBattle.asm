@@ -313,6 +313,13 @@ scope TwelveCharBattle {
     float32 -7.8                              // column 6
     float32 -3.8                              // column 7
     float32 -1.8                              // column 8
+    // Phase B 2c: center block columns (table indices NUM_COLUMNS..+CENTER_COLS-1); these slots
+    // slide in from the right (their stored column index >= NUM_COLUMNS/2), so use a leftward
+    // (negative) velocity.
+    float32 -8.0                              // center column 1
+    float32 -8.0                              // center column 2
+    float32 -8.0                              // center column 3
+    float32 -8.0                              // center column 4
 
     // @ Description
     // CSS characters in order of portrait ID (Phase B: MAX_SLOTS capacity)
@@ -424,6 +431,19 @@ scope TwelveCharBattle {
     constant PORTRAIT_HEIGHT(30)
 
     // @ Description
+    // Phase B 2c: Tournament's 8 extra slots (portrait ids NUM_SLOTS..MAX_SLOTS-1) are rendered
+    // as a centered CENTER_COLS x CENTER_ROWS block below the 24-slot grid (where the per-side
+    // stats used to be). These constants are the single source of truth for that block's
+    // geometry; render, cursor hit-test and token auto-position all derive from them, so tuning
+    // the block on hardware only means editing these. CENTER_COLS * CENTER_ROWS must equal
+    // MAX_SLOTS - NUM_SLOTS (the number of extra slots).
+    constant CENTER_COLS(4)
+    constant CENTER_ROWS(2)
+    constant CENTER_X(100)          // screen X of the leftmost center portrait (top-left)
+    constant CENTER_ROW_BASE(3)     // effective grid row of the first center row
+                                    // (uly = row * PORTRAIT_HEIGHT + START_Y + START_VISUAL)
+
+    // @ Description
     // This table holds the final X position for portraits
     // This could just be based on column, but it is set for each portrait to make code simpler
     portrait_x_position:
@@ -437,6 +457,14 @@ scope TwelveCharBattle {
         }
         float32 {x}
         evaluate n({n} + 1)
+    }
+    // Phase B 2c: center block column X positions (table indices NUM_COLUMNS..+CENTER_COLS-1).
+    // The slide-in animation reads portrait_x_position[stored_column] as the final X.
+    evaluate cn(0)
+    while CENTER_COLS > {cn} {
+        evaluate cx(CENTER_X + PORTRAIT_WIDTH * {cn})
+        float32 {cx}
+        evaluate cn({cn} + 1)
     }
 
     // @ Description
@@ -1180,6 +1208,38 @@ scope TwelveCharBattle {
         xor     t3, t3, t0                 // t3 = 0 if Tournament
         sltiu   t3, t3, 0x0001             // t3 = 1 if Tournament, else 0
 
+        // PHASE B 2c: Tournament center block hit-test. The 8 extra slots render as a centered
+        // CENTER_COLS x CENTER_ROWS block; map a cursor inside it directly to portrait id
+        // NUM_SLOTS + crow*CENTER_COLS + ccol. The 24-slot grid path below caps at NUM_PORTRAITS,
+        // so these ids come only from here. (a1 = xpos, v1 = ypos - START_Y, a3 = CSS player struct)
+        beqz    t3, _center_hit_done        // only Tournament
+        nop
+        // a1/v1 are in the cursor (hit) frame, which is offset from the render frame. The grid
+        // hit-test selects portraits drawn at (START_VISUAL + START_X - 8) using base
+        // LEFT_GRID_START_X, so cursor x = render x - ((START_VISUAL+START_X-8) - LEFT_GRID_START_X)
+        // (= 13px); and v1 (= ypos - START_Y) maps row r to [r*H, r*H+H), so the row base is just
+        // CENTER_ROW_BASE*H (no START_VISUAL). Use the cursor-frame bases here so the block's hit
+        // region lines up with where the portraits render.
+        addiu   t0, a1, -(CENTER_X - ((START_VISUAL + START_X - 8) - LEFT_GRID_START_X)) // t0 = cursor x - block left
+        sltiu   t1, t0, CENTER_COLS * PORTRAIT_WIDTH // t1 = 1 if within the block's x range
+        beqz    t1, _center_hit_done
+        nop
+        addiu   t1, v1, -(CENTER_ROW_BASE * PORTRAIT_HEIGHT) // t1 = cursor row offset from block top
+        sltiu   t2, t1, CENTER_ROWS * PORTRAIT_HEIGHT // t2 = 1 if within the block's y range
+        beqz    t2, _center_hit_done
+        nop
+        lli     t2, PORTRAIT_WIDTH
+        divu    t0, t2
+        mflo    t0                          // t0 = ccol
+        lli     t2, PORTRAIT_HEIGHT
+        divu    t1, t2
+        mflo    t1                          // t1 = crow
+        sll     t1, t1, 0x0002              // t1 = crow * CENTER_COLS (4)
+        addu    t0, t1, t0                  // t0 = crow*CENTER_COLS + ccol
+        j       _have_index
+        addiu   t0, t0, NUM_SLOTS           // t0 = portrait id (NUM_SLOTS..MAX_SLOTS-1) (delay slot)
+        _center_hit_done:
+
         lli     t0, RIGHT_GRID_END_X        // Tournament / port-1: full right end
         bnez    t3, _greater_than_check     // Tournament -> full right end for both ports
         nop
@@ -1227,14 +1287,14 @@ scope TwelveCharBattle {
         _skip_port_shift:
 
         // return id.NONE if index is too large for table
-        // PHASE B: Tournament (t3 != 0) has up to MAX_SLOTS portraits; others use NUM_PORTRAITS
+        // PHASE B 2c: the 24-slot grid path caps at NUM_PORTRAITS for every mode; Tournament's
+        // extra center slots are handled by the center hit-test above (which jumps to _have_index).
         lli     t1, NUM_PORTRAITS           // t1 = NUM_PORTRAITS (24)
-        bnezl   t3, pc() + 8                // if Tournament, raise the bound to MAX_SLOTS
-        lli     t1, MAX_SLOTS               // t1 = 32 (delay slot, likely)
         sltu    t2, t0, t1                  // if (t0 < t1), t2 = 0
         beqz    t2, _end                    // explained above lol
         lli     v0, Character.id.NONE       // also explained above lol
 
+        _have_index:
         sw      t0, 0x00B4(a3)              // save portrait_id
 
         li      t1, config.status           // t1 = battle status
@@ -1262,6 +1322,79 @@ scope TwelveCharBattle {
 
         _end:
         jr      ra
+        nop
+    }
+
+    // @ Description
+    // PHASE B 2c: make the Tournament center block grab-able by the cursor.
+    // The vanilla cursor-state routine (0x80137D4C) decides the per-port cursor state (+0x54 of the
+    // cursor struct) from the cursor's render Y: 38 <= Y <= 124 -> "over the grid" (the hover path,
+    // which sets state 2 when free or PRESERVES state 1 while holding a token); Y > 124 (below the
+    // 3 grid rows) -> the pointer path, which UNCONDITIONALLY forces state 0 (hand) every frame.
+    // The 8 center slots render below Y 124, so the pointer path wiped the cursor state every frame:
+    // not only could it never hover, but an in-progress grab (state 1) was reset before it could
+    // commit -- which is why the marker showed on the hand yet never dropped onto a center icon.
+    // Fix: intercept the "Y > 124 -> pointer" branch and, for Tournament when the cursor is inside
+    // the center block, send it down the vanilla HOVER path instead. That path does the full,
+    // correct thing (hover when free, keep holding while grabbing), so grabbing/committing works
+    // exactly like a normal grid slot. Anything else below the grid (L/R panels, RESET) still takes
+    // the pointer path, so the "hand mode" barrier only applies outside the center rectangle.
+    // The center region matches get_character_id_'s center hit-test (cursor render frame:
+    // X base CENTER_X-13, Y base CENTER_ROW_BASE*H + START_Y).
+    scope tourney_cursor_state_: {
+        // Hook the vanilla "bc1t -> pointer path" (cursor render Y > 124). We replace the branch +
+        // its delay slot; the delay slot (sll t7,t7,4) still runs so t7 stays valid for the pointer
+        // path. The c.lt.s flag (124 < Y) set just above is still live here.
+        OS.patch_start(0x00136018, 0x80137D98)
+        j       tourney_cursor_state_
+        sll     t7, t7, 0x0004              // original bc1t delay slot (finishes t7 for pointer path)
+        OS.patch_end()
+
+        // s5 = port, s6 = cursor object (both already set up by the vanilla routine above the hook)
+        bc1f    _fallthrough                // Y <= 124 -> normal vanilla fall-through (grid / above-grid)
+        nop
+
+        // Y > 124 here (vanilla would force pointer/hand). Override only for Tournament + center block.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _pointer            // not Tournament -> vanilla pointer path
+        nop
+
+        lw      t2, 0x0074(s6)              // t2 = cursor render struct
+        lwc1    f0, 0x0058(t2)              // cursor render X (float)
+        cvt.w.s f0, f0
+        mfc1    t3, f0                      // t3 = (int) cursor render X
+        lwc1    f0, 0x005C(t2)              // cursor render Y (float)
+        cvt.w.s f0, f0
+        mfc1    t4, f0                      // t4 = (int) cursor render Y
+
+        // inside the center block? (X base = CENTER_X - 13, the cursor-frame offset; Y base =
+        // CENTER_ROW_BASE*H + START_Y -- both match get_character_id_'s center hit-test)
+        addiu   t5, t3, -(CENTER_X - ((START_VISUAL + START_X - 8) - (START_X - 11)))
+        sltiu   t6, t5, CENTER_COLS * PORTRAIT_WIDTH
+        beqz    t6, _pointer                // X outside center -> pointer (L/R panels stay hand)
+        nop
+        addiu   t5, t4, -(CENTER_ROW_BASE * PORTRAIT_HEIGHT + START_Y)
+        sltiu   t6, t5, CENTER_ROWS * PORTRAIT_HEIGHT
+        beqz    t6, _pointer                // Y outside center -> pointer (RESET etc stay hand)
+        nop
+
+        // center block: take the vanilla HOVER path (0x80137E04). It expects t9 = port*188 and
+        // t0 = 0x80140000 (it then does addiu t0,t0,-17784 -> 0x8013BA88 and addu s4,t9,t0).
+        sll     t9, s5, 0x0002             // port * 4
+        subu    t9, t9, s5                 // port * 3
+        sll     t9, t9, 0x0004             // port * 48
+        subu    t9, t9, s5                 // port * 47
+        sll     t9, t9, 0x0002             // port * 188 (cursor struct stride)
+        j       0x80137E04                 // vanilla hover path
+        lui     t0, 0x8014                 // (delay) t0 = 0x80140000
+
+        _pointer:
+        j       0x80137DC4                 // vanilla pointer/hand path
+        nop
+
+        _fallthrough:
+        j       0x80137DA0                 // vanilla fall-through (computes t9 / checks the 38.0 bound)
         nop
     }
 
@@ -2932,6 +3065,13 @@ scope TwelveCharBattle {
         nop
 
         _check_character_set_p1:
+        // PHASE B Stage 3: Tournament has no Character Set selector, so skip its arrow press
+        // checks -- their hit-regions (y ~172) overlap the new center block. RESET (checked on
+        // the started path above) and BACK (checked at _end) are unaffected.
+        OS.read_word(VsRemixMenu.vs_mode_flag, v0) // v0 = vs_mode_flag
+        lli     a1, VsRemixMenu.mode.TOURNEY
+        beq     v0, a1, _end                // Tournament -> skip Character Set arrows
+        nop
         // p1 scroll right
         lui     a1, 0x42F7                  // a1 = image ulx (123.5)
         lli     a2, 33                      // a2 = image width
@@ -5359,7 +5499,14 @@ scope TwelveCharBattle {
         Render.draw_number(0x1E, GROUP_ALWAYS, config.p2.stocks_remaining, Render.update_live_string_, X_P2, 0x430C0000, 0x4040C0FF, 0x3F600000, Render.alignment.CENTER)
         _skip_stocks_remaining:
 
-        // Character Set
+        // Character Set (PHASE B Stage 3: not drawn for Tournament -- the roster is the fixed
+        // 32-distinct layout.t, not a cycleable preset, and the selector overlaps the new center
+        // block. update_character_set_ is already a no-op for Tournament, so the (now hidden)
+        // arrows do nothing.)
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _skip_character_set // Tournament -> skip the Character Set selector
+        nop
         Render.draw_string(0x1E, GROUP_NOT_STARTED, string_character_set, Render.NOOP, 0x43200000, 0x43200000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
         Render.draw_string_pointer(0x1E, GROUP_NOT_STARTED, config.p1.character_set_pointer, Render.update_live_string_, X_P1, 0x432D8000, 0xB00000FF, 0x3F600000, Render.alignment.CENTER)
         Render.draw_string_pointer(0x1E, GROUP_NOT_STARTED, config.p2.character_set_pointer, Render.update_live_string_, X_P2, 0x432D8000, 0x4040C0FF, 0x3F600000, Render.alignment.CENTER)
@@ -5367,6 +5514,7 @@ scope TwelveCharBattle {
         Render.draw_texture_at_offset(0x1E, GROUP_NOT_STARTED, 0x8013C4A0, 0xEDC8, Render.NOOP, 0x43190000, 0x432F8000, 0xFF0000FF, 0x303030FF, 0x3F200000)
         Render.draw_texture_at_offset(0x1E, GROUP_NOT_STARTED, 0x8013C4A0, 0xECE8, Render.NOOP, 0x431F0000, 0x432F8000, 0xFF0000FF, 0x303030FF, 0x3F200000)
         Render.draw_texture_at_offset(0x1E, GROUP_NOT_STARTED, 0x8013C4A0, 0xEDC8, Render.NOOP, 0x435D0000, 0x432F8000, 0xFF0000FF, 0x303030FF, 0x3F200000)
+        _skip_character_set:
 
         // Best Character (12CB per-side stat -- E.3: not computed or drawn for Tournament,
         // which shares `config`; drawing a null best_character_pointer would also be unsafe)

@@ -510,7 +510,15 @@ scope CharacterSelect {
 
         addiu   v1, v1, (START_Y - TOKEN_OFFSET_Y) // v1 = ypos, unadjusted
         // discard values past given y value
-        sltiu   t0, v1, TwelveCharBattle.START_Y + 85 // if ypos greater than given value
+        // PHASE B 2c: Tournament has a 4th (center) row of slots below the 3 grid rows, so
+        // raise the y cutoff for Tournament; 12CB keeps the 3-row cutoff.
+        lli     t1, TwelveCharBattle.START_Y + 85 // t1 = default cutoff (12CB: 3 rows)
+        li      t0, VsRemixMenu.vs_mode_flag
+        lw      t0, 0x0000(t0)              // t0 = vs_mode_flag
+        lli     t2, VsRemixMenu.mode.TOURNEY
+        beql    t0, t2, pc() + 8            // if Tournament, use the taller cutoff
+        lli     t1, TwelveCharBattle.START_Y + 165 // (delay slot, runs only when Tournament)
+        sltu    t0, v1, t1                  // if ypos greater than cutoff
         beqz    t0, _end                    // ...return
         lli     v0, Character.id.NONE       // v0 = ret = NONE
 
@@ -723,6 +731,28 @@ scope CharacterSelect {
         lw      t0, 0x0000(t0)              // t0 = 1 if 12cb mode
         beqz    t0, _check_bookends         // skip if not 12cb
         nop
+        // PHASE B 2c: Tournament center slots (portrait id >= NUM_SLOTS) place their token in the
+        // centered block, not on the 24-slot grid. Token X = ccol*W + CENTER_X (+ the token's
+        // usual offset relative to the rendered portrait).
+        li      t8, VsRemixMenu.vs_mode_flag
+        lw      t8, 0x0000(t8)              // t8 = vs_mode_flag
+        lli     t9, VsRemixMenu.mode.TOURNEY
+        bne     t8, t9, _vs_x_grid          // not Tournament -> normal grid
+        nop
+        sltiu   t8, v0, TwelveCharBattle.NUM_SLOTS
+        bnez    t8, _vs_x_grid              // portrait id < NUM_SLOTS -> normal grid
+        nop
+        addiu   t8, v0, -TwelveCharBattle.NUM_SLOTS // t8 = center index (0..7)
+        lli     t9, TwelveCharBattle.CENTER_COLS
+        divu    t8, t9
+        mfhi    t8                          // t8 = ccol
+        lli     t9, TwelveCharBattle.PORTRAIT_WIDTH
+        multu   t9, t8
+        mflo    t9                          // t9 = ccol * PORTRAIT_WIDTH
+        b       _check_bookends
+        addiu   t9, t9, TwelveCharBattle.CENTER_X + AUTO_POSITION_OFFSET_X - TwelveCharBattle.START_VISUAL // (delay) center token X
+
+        _vs_x_grid:
         lli     t8, TwelveCharBattle.NUM_COLUMNS
         divu    v0, t8                      // ~
         mfhi    t8                          // t8 = portrait_id % NUM_COLUMNS = column
@@ -782,6 +812,28 @@ scope CharacterSelect {
             beq     t9, t1, _end                // if bonus bookend, use top
             lli     t2, START_Y + AUTO_POSITION_OFFSET_Y // t2 = top
 
+            // PHASE B 2c: Tournament center slots (portrait id >= NUM_SLOTS) place their token in
+            // the centered block. Token Y = (CENTER_ROW_BASE + crow) * H (+ usual token offset).
+            li      t1, VsRemixMenu.vs_mode_flag
+            lw      t1, 0x0000(t1)              // t1 = vs_mode_flag
+            lli     t2, VsRemixMenu.mode.TOURNEY
+            bne     t1, t2, _ty_grid            // not Tournament -> normal grid
+            nop
+            sltiu   t1, t9, TwelveCharBattle.NUM_SLOTS
+            bnez    t1, _ty_grid                // portrait id < NUM_SLOTS -> normal grid
+            nop
+            addiu   t1, t9, -TwelveCharBattle.NUM_SLOTS // t1 = center index (0..7)
+            lli     t2, TwelveCharBattle.CENTER_COLS
+            divu    t1, t2
+            mflo    t1                          // t1 = crow
+            addiu   t1, t1, TwelveCharBattle.CENTER_ROW_BASE // t1 = effective row
+            lli     t2, TwelveCharBattle.PORTRAIT_HEIGHT
+            multu   t2, t1
+            mflo    t2                          // t2 = effective_row * PORTRAIT_HEIGHT
+            b       _end
+            addiu   t2, t2, TwelveCharBattle.START_Y + AUTO_POSITION_OFFSET_Y // (delay) center token Y
+
+            _ty_grid:
             lli     t1, NUM_COLUMNS             // ~
             li      t2, TwelveCharBattle.twelve_cb_flag
             lw      at, 0x0000(t2)              // at = 1 if 12cb mode
@@ -1481,6 +1533,28 @@ scope CharacterSelect {
         _store_portrait_id:
         sw      v0, 0x0010(sp)              // store v0 in stack
 
+        // PHASE B 2c: Tournament center slots place their token in the centered block.
+        li      t0, VsRemixMenu.vs_mode_flag
+        lw      t0, 0x0000(t0)
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _ptfi_grid_x        // not Tournament -> normal grid
+        nop
+        sltiu   t0, v0, TwelveCharBattle.NUM_SLOTS
+        bnez    t0, _ptfi_grid_x            // portrait id < NUM_SLOTS -> normal grid
+        nop
+        addiu   t1, v0, -TwelveCharBattle.NUM_SLOTS // center index (0..7)
+        lli     t2, TwelveCharBattle.CENTER_COLS
+        divu    t1, t2
+        mfhi    t1                          // t1 = ccol
+        lli     t2, TwelveCharBattle.PORTRAIT_WIDTH
+        multu   t2, t1
+        mflo    t2                          // t2 = ccol * PORTRAIT_WIDTH
+        lli     t0, 0x0001
+        sw      t0, 0x001C(sp)              // save 12cb flag (the Y block below reads it)
+        b       _continue
+        addiu   t2, t2, TwelveCharBattle.CENTER_X + 2 // (delay) center token X
+
+        _ptfi_grid_x:
         // get token location
         lli     t2, NUM_COLUMNS             // ~
         li      t0, TwelveCharBattle.twelve_cb_flag
@@ -1514,6 +1588,28 @@ scope CharacterSelect {
         sw      t2, 0x0058(t8)              // update token_xpos
 
         lw      v0, 0x0010(sp)              // restore v0 (portrait_id)
+
+        // PHASE B 2c: Tournament center slots -> centered token Y
+        li      t0, VsRemixMenu.vs_mode_flag
+        lw      t0, 0x0000(t0)
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _ptfi_grid_y        // not Tournament -> normal grid
+        nop
+        sltiu   t0, v0, TwelveCharBattle.NUM_SLOTS
+        bnez    t0, _ptfi_grid_y            // portrait id < NUM_SLOTS -> normal grid
+        nop
+        addiu   t1, v0, -TwelveCharBattle.NUM_SLOTS // center index (0..7)
+        lli     t0, TwelveCharBattle.CENTER_COLS
+        divu    t1, t0
+        mflo    t1                          // t1 = crow
+        addiu   t1, t1, TwelveCharBattle.CENTER_ROW_BASE // t1 = effective row
+        lli     t0, TwelveCharBattle.PORTRAIT_HEIGHT
+        multu   t0, t1
+        mflo    t2                          // t2 = effective_row * PORTRAIT_HEIGHT
+        b       _ptfi_y_done
+        addiu   t2, t2, TwelveCharBattle.START_Y + 14 // (delay) center token Y
+
+        _ptfi_grid_y:
         lli     t0, NUM_COLUMNS             // ~
         lw      t2, 0x001C(sp)              // t2 = 12cb flag
         bnezl   t2, pc() + 8                // if 12cb, use correct columns
@@ -1530,6 +1626,7 @@ scope CharacterSelect {
         lw      t0, 0x001C(sp)              // t0 = 12cb flag
         bnezl   t0, pc() + 8                // if 12cb, use correct offset
         addiu   t2, t2, TwelveCharBattle.START_Y - START_Y
+        _ptfi_y_done:
         move    a0, t2                      // ~
         jal     OS.int_to_float_            // ~
         nop
@@ -1586,14 +1683,19 @@ scope CharacterSelect {
         addiu   a1, a1, 0x0860              // a1 = flash portrait image footer address
 
         // use portraits to get position/scale/etc info
-        lli     t3, 0x0000                  // t3 = loop variable/portrait_id
+        // PHASE B 2c: match the portrait object by its STORED portrait id (0x0030), not by list
+        // position. The bookend ids were bumped to 32/33 (past Tournament's 32-slot grid), but the
+        // bookend objects still render right after the 30 VS portraits, so position-counting walked
+        // off the end of the object list and crashed when a bookend was selected in VS. (The bookend
+        // objects get their 0x0030 set in draw_portraits_ so they're findable here.)
         OS.read_word(Render.ROOM_TABLE + (0x1B * 4), t4) // t4 = first portrait object
         _loop_{#}:
+        lw      t3, 0x0030(t4)              // t3 = this object's portrait id
         beql    s0, t3, _set_portrait_info_{#}  // if this is the right portrait, exit loop
-        lw      t4, 0x0074(t4)              // t4 = image struct
+        lw      t4, 0x0074(t4)              // t4 = image struct (delay slot, taken when found)
         lw      t4, 0x0020(t4)              // t4 = next portrait object
         b       _loop_{#}
-        addiu   t3, t3, 0x0001              // t3 = next portrait_id
+        nop
 
         _set_portrait_info_{#}:
         lw      t0, 0x0058(t4)              // t0 = ulx
@@ -3570,8 +3672,13 @@ scope CharacterSelect {
     constant NUM_ROWS(3)
     constant NUM_COLUMNS(10)
     constant NUM_PORTRAITS(NUM_ROWS * NUM_COLUMNS)
-    constant BOOKEND_BONUS_PORTRAIT(NUM_PORTRAITS)
-    constant BOOKEND_RANDOM_PORTRAIT(NUM_PORTRAITS + 1)
+    // PHASE B 2c: the bonus/random "bookend" buttons reserve two portrait ids. They used to be
+    // NUM_PORTRAITS / +1 (= 30/31), but Tournament's CSS reuses this portrait-id space with up to
+    // TwelveCharBattle.MAX_SLOTS (32) real portraits -- so its slots 30/31 collided with these
+    // sentinels and selecting them ran bookend code (crash). Move the sentinels past the largest
+    // grid (MAX_SLOTS = 32) so no real portrait id ever equals them. Must stay >= NUM_PORTRAITS.
+    constant BOOKEND_BONUS_PORTRAIT(TwelveCharBattle.MAX_SLOTS)      // 32
+    constant BOOKEND_RANDOM_PORTRAIT(TwelveCharBattle.MAX_SLOTS + 1) // 33
     constant PORTRAIT_WIDTH_FILE(32)
     constant PORTRAIT_HEIGHT_FILE(32)
     constant PORTRAIT_SCALE(0x3F50)     // float 0.8125
@@ -3687,6 +3794,28 @@ scope CharacterSelect {
         mfhi    t0                          // t0 = COLUMN
         mflo    t1                          // t1 = ROW
 
+        // PHASE B 2c: Tournament's extra slots (ids >= NUM_SLOTS) render as a centered block.
+        // Remap them to a dedicated column index (which selects their X in portrait_x_position)
+        // and an effective row (which selects their Y), so they leave the 24-slot grid.
+        beqz    a0, _no_center_pos          // only 12cb/Tournament (a0 = 12cb flag)
+        nop
+        sltiu   t2, s0, TwelveCharBattle.NUM_SLOTS // t2 = 1 if a normal grid slot (< 24)
+        bnez    t2, _no_center_pos
+        nop
+        li      t2, VsRemixMenu.vs_mode_flag
+        lw      t2, 0x0000(t2)              // t2 = vs_mode_flag
+        lli     t4, VsRemixMenu.mode.TOURNEY
+        bne     t2, t4, _no_center_pos      // only Tournament centers the extra slots
+        nop
+        addiu   t2, s0, -TwelveCharBattle.NUM_SLOTS // t2 = center index (0..7)
+        lli     t4, TwelveCharBattle.CENTER_COLS
+        divu    t2, t4
+        mfhi    t0                          // t0 = ccol -> column index into X/velocity tables
+        mflo    t1                          // t1 = crow
+        addiu   t0, t0, TwelveCharBattle.NUM_COLUMNS      // column index = NUM_COLUMNS + ccol
+        addiu   t1, t1, TwelveCharBattle.CENTER_ROW_BASE  // effective row = CENTER_ROW_BASE + crow
+        _no_center_pos:
+
         // first, draw the portrait texture
         addiu   sp, sp, -0x0030             // allocate stack space
         sw      s0, 0x0004(sp)              // save registers
@@ -3780,6 +3909,8 @@ scope CharacterSelect {
         sw      a0, 0x0018(t0) // for now, override x scale
         lui     a0, 0x3F42
         sw      a0, 0x001C(t0) // for now, override y scale
+        lli     t0, BOOKEND_BONUS_PORTRAIT  // PHASE B 2c: store portrait id so the white-flash
+        sw      t0, 0x0030(v0)              // object lookup (which matches by 0x0030) can find this bookend
         lli     t0, NUM_COLUMNS             // t0 = column index
         sw      t0, 0x0084(v0)              // save column index in object struct
         addiu   sp, sp, -0x0030             // move stack pointer (0x80008188 is not safe)
@@ -3796,6 +3927,8 @@ scope CharacterSelect {
         sw      a0, 0x0018(t0) // for now, override x scale
         lui     a0, 0x3F42
         sw      a0, 0x001C(t0) // for now, override y scale
+        lli     t0, BOOKEND_RANDOM_PORTRAIT // PHASE B 2c: store portrait id so the white-flash
+        sw      t0, 0x0030(v0)              // object lookup (which matches by 0x0030) can find this bookend
         lli     t0, NUM_COLUMNS + 1         // t0 = column index
         sw      t0, 0x0084(v0)              // save column index in object struct
         addiu   sp, sp, -0x0030             // move stack pointer (0x80008188 is not safe)
@@ -3940,8 +4073,16 @@ scope CharacterSelect {
         evaluate n({n} + 1)
         dw portrait_offsets.{layout.slot_{n}}
     }
-    dw portrait_offsets.BONUS_BOOKEND
-    dw portrait_offsets.RANDOM_BOOKEND
+    // PHASE B 2c: the bookend ids were moved to BOOKEND_BONUS_PORTRAIT / +1 (32/33), past the VS
+    // grid (30 portraits). Pad the gap so the bookend offsets land at those ids. The padding
+    // entries (ids NUM_SLOTS..BOOKEND_BONUS_PORTRAIT-1) are never indexed in VS (its grid is 0-29
+    // and its bookends are 32/33); 12CB/Tournament use their own tables entirely.
+    while BOOKEND_BONUS_PORTRAIT > {n} {
+        dw portrait_offsets.BONUS_BOOKEND   // filler for unused gap ids
+        evaluate n({n} + 1)
+    }
+    dw portrait_offsets.BONUS_BOOKEND       // id BOOKEND_BONUS_PORTRAIT (32)
+    dw portrait_offsets.RANDOM_BOOKEND      // id BOOKEND_RANDOM_PORTRAIT (33)
     OS.align(4)
 
     // @ Description
