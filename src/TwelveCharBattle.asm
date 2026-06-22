@@ -2039,8 +2039,19 @@ scope TwelveCharBattle {
         sw      t1, 0x0000(t0)
         li      t0, CharacterSelect.portrait_offset_table_pointer
         li      t1, portrait_offset_table
+        sw      t1, 0x0000(t0)
+        // 12CB: restore the custom character-set table entries to the per-port custom tables
+        // (Tournament repoints them at the shared id_table_t below; restore so 12CB's own custom
+        // mode is unaffected).
+        li      t0, character_set_table + (NUM_PRESETS * 0x10) // t0 = custom (p1) entry
+        li      t1, id_table_p1;              sw t1, 0x0000(t0)
+        li      t1, portrait_offset_table_p1; sw t1, 0x0004(t0)
+        li      t1, portrait_id_table_p1;     sw t1, 0x0008(t0)
+        li      t1, id_table_p2;              sw t1, 0x0010(t0)
+        li      t1, portrait_offset_table_p2; sw t1, 0x0014(t0)
+        li      t1, portrait_id_table_p2;     sw t1, 0x0018(t0)
         b       _pointers_done
-        sw      t1, 0x0000(t0)              // (delay slot)
+        nop
 
         _tourney_pointers:
         li      t0, CharacterSelect.id_table_pointer
@@ -2052,6 +2063,16 @@ scope TwelveCharBattle {
         li      t0, CharacterSelect.portrait_offset_table_pointer
         li      t1, portrait_offset_table_t
         sw      t1, 0x0000(t0)
+        // PHASE B: Tournament defaults to the per-slot "custom" character set, with BOTH custom
+        // table entries (p1 and p2) pointing at the shared 32-distinct grid (id_table_t etc.), so
+        // the in-game slot cycler edits the one shared grid regardless of which player edits.
+        li      t0, character_set_table + (NUM_PRESETS * 0x10) // t0 = custom (p1) entry
+        li      t1, id_table_t;             sw t1, 0x0000(t0); sw t1, 0x0010(t0)
+        li      t1, portrait_offset_table_t; sw t1, 0x0004(t0); sw t1, 0x0014(t0)
+        li      t1, portrait_id_table_t;    sw t1, 0x0008(t0); sw t1, 0x0018(t0)
+        lli     t1, NUM_PRESETS             // custom character set index
+        li      t0, config.p1.character_set; sw t1, 0x0000(t0)
+        li      t0, config.p2.character_set; sw t1, 0x0000(t0)
         _pointers_done:
 
         li      t0, CharacterSelect.portrait_x_position_pointer
@@ -2749,7 +2770,9 @@ scope TwelveCharBattle {
         lbu     t1, 0x0000(t3)              // t1 = character_id
         addu    t4, t2, t1                  // t4 = offset to portrait_id for this character
         sb      at, 0x0000(t4)              // save portrait_id
-        sltiu   t4, at, NUM_SLOTS           // at = 0 if end of loop
+        OS.read_word(slot_count, t4)        // PHASE B: 24 (12CB) or 32 (Tournament) live slots
+        addiu   t4, t4, -0x0001             // t4 = slot_count - 1 (post-check bound)
+        sltu    t4, at, t4                  // at = 0 if end of loop
         addiu   t3, t3, 0x0001              // id_table++
         bnezl   t4, _update_loop            // loop until all updated
         addiu   at, at, 0x0001              // portrait_id++
@@ -2794,12 +2817,13 @@ scope TwelveCharBattle {
         sw      s1, 0x0018(sp)              // ~
         sw      a1, 0x001C(sp)              // ~
 
-        // PHASE B: Tournament uses a fixed, dedicated 32-distinct grid (layout.t) wired directly
-        // as the live tables, with no preset cycling. Re-populating would overwrite it, so this
-        // routine is a no-op for Tournament.
+        // PHASE B: Tournament's live tables ARE the shared 32-distinct grid (id_table_t), and the
+        // in-game slot cycler edits them directly, so the per-port preset REPOPULATION below would
+        // overwrite the grid -- skip it. But we still need the portrait RE-RENDER (_portraits) so a
+        // cycled slot updates on screen, so jump there instead of returning.
         OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
         lli     t1, VsRemixMenu.mode.TOURNEY
-        beq     t0, t1, _end
+        beq     t0, t1, _portraits         // Tournament -> skip repopulate, just re-render portraits
         nop
 
         // update index and string
@@ -2951,7 +2975,9 @@ scope TwelveCharBattle {
         jal     update_portrait_variant_indicator_
         or      a0, r0, t0                  // a0 = portrait object struct
         lw      t1, 0x0030(t0)              // t1 = portrait_id
-        sltiu   t4, t1, NUM_SLOTS - 1       // t4 = 1 if we should continue looping
+        OS.read_word(slot_count, t4)        // PHASE B: 24 (12CB) or 32 (Tournament) -- redraw all slots
+        addiu   t4, t4, -0x0001             // t4 = slot_count - 1
+        sltu    t4, t1, t4                  // t4 = 1 if we should continue looping
         beqz    t4, _end                    // if we've hit our last portrait_id, then stop looping
         lw      t0, 0x0020(t0)              // t0 = next portrait object
         b       _loop                       // loop while there are still more portraits
@@ -4565,6 +4591,15 @@ scope TwelveCharBattle {
         addiu   t7, r0, -0x0001             // t7 = -1
         sh      t7, 0x0000(t1)              // save updated timer
 
+        // PHASE B: Tournament custom editing is "scroll only" -- only the Z/R per-slot cycle is
+        // supported. Skip the 12CB extras (L = set-all, D-pad down = randomize, hold D-pad up = copy,
+        // tap D-pad up = preset cycle); they assume per-player 24-slot half-grids and would corrupt
+        // the shared 32-distinct grid.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _end                // Tournament -> no extras, only Z/R scroll
+        nop
+
         lw      t1, 0x004C(sp)              // t1 = input struct
         lhu     t1, 0x0006(t1)              // t1 = released button mask
         andi    t1, t1, Joypad.L            // L
@@ -4670,10 +4705,17 @@ scope TwelveCharBattle {
         beqz    t3, _update_all             // if updating all portraits, use different logic
         nop
         sb      t6, 0x0000(t1)              // update character_id
+        // PHASE B: Tournament's shared 32-distinct grid has no per-half mirror -- edit only the
+        // hovered slot. (12CB mirrors the edit to the slot +/-4 in the other half.)
+        OS.read_word(VsRemixMenu.vs_mode_flag, t7) // t7 = vs_mode_flag
+        lli     t9, VsRemixMenu.mode.TOURNEY
+        beq     t7, t9, _skip_mirror        // Tournament -> no mirror
+        nop
         addiu   t7, t1, 0x0004              // t7 = other portrait_id slot to update (because of how it's set up)
         bnezl   t2, pc() + 8                // if p2, then slot is to the left 4 places, not right
         addiu   t7, t1, -0x0004             // t7 = other portrait_id slot to update (because of how it's set up)
         sb      t6, 0x0000(t7)              // update character_id
+        _skip_mirror:
 
         // update portrait_offset_table
         li      t7, CharacterSelect.portrait_offset_by_character_table

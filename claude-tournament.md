@@ -76,9 +76,24 @@ Buffer). `master` is the clean fallback. Build with the full sequence (`bass` �
    portrait — i.e. "markers can't be moved below the 3 rows." Each token path computes
    `ccol/crow` for ids >= NUM_SLOTS and positions at `CENTER_X + ccol*W` / effective row
    `CENTER_ROW_BASE + crow` (matching render, plus each site's existing token offset).
-3. **Phase B — in-game custom editing (deferred):** grid is the fixed auto-filled roster; cycling a
-   slot to a different character in-game needs `set_portrait_` redirect (write to the `layout.t`
-   live tables) + default-to-custom for Tournament. (User wanted all slots editable.)
+3. **Phase B — in-game custom editing (DONE, build-verified, needs HW test):** Tournament now
+   defaults to the per-slot "custom" character set, with shared scroll-only editing (user's choice:
+   one shared grid, not per-player; no randomize/copy/preset). No toggle widget re-added (Stage 3
+   removed it). How it works: hold a slot's token and hold Z/R to scroll that slot through all
+   characters; both players edit the one shared grid; edits persist across CSS entries (until the
+   E.4 mode-change reset). Implementation (all gated to `vs_mode_flag == TOURNEY`, in
+   `src/TwelveCharBattle.asm`):
+   - `force_ffa_and_stock_`: point BOTH custom `character_set_table` entries (NUM_PRESETS+0/+1) at the
+     shared `id_table_t`/`portrait_offset_table_t`/`portrait_id_table_t`, and set
+     `config.p1/p2.character_set = NUM_PRESETS`. 12CB restores those entries to its per-port
+     `id_table_p1/p2` (so 12CB's own custom mode is untouched).
+   - In-game cycler (the `character_set == custom` Z/R handler): for Tournament, skip the 12CB extras
+     (L set-all, D-pad randomize/copy, preset cycle) and skip the per-half +/-4 mirror, so only the
+     single hovered slot of the shared 32-distinct grid is edited.
+   - Redraw: `update_character_set_` for Tournament now skips the per-port repopulate but still runs
+     the `_portraits` re-render (jumps to `_portraits` instead of returning); its loop bound and
+     `update_portrait_id_table_`'s bound changed from `NUM_SLOTS` to runtime `slot_count` (24 vs 32)
+     so all 32 slots redraw/remap.
 4. **Phase B Stage 3 (DONE, build-verified, needs HW test):** the "Character Set" selector is no
    longer drawn for Tournament (it overlapped the new center block, and the roster is the fixed
    `layout.t`, not a cycleable preset). Both the display (`setup_` `_skip_character_set`) and the
