@@ -37,19 +37,18 @@ Buffer). `master` is the clean fallback. Build with the full sequence (`bass` �
 
 **Done:**
 - Phases **A, C, D** — DONE, HW-confirmed.
-- Eliminated-character **darken/lock in Tournament** bugfix — DONE, HW-confirmed (user notes minor
-  bugs remain to chase later — see that bugfix section).
-- **E.3** (Tournament doesn't touch Stocks Remaining / Best Character stats) — DONE, build-verified,
-  **needs HW confirm**.
-- **E.4** (save-on-exit / mode-aware `config` reset via `last_owner_mode`) — DONE, build-verified,
-  **needs HW confirm**.
+- Eliminated-character **darken/lock in Tournament** bugfix — DONE, HW-confirmed (the previously
+  noted "minor bugs to chase later" did NOT reproduce in the latest HW pass — see that bugfix
+  section).
+- **E.3** (Tournament doesn't touch Stocks Remaining / Best Character stats) — DONE, HW-confirmed.
+- **E.4** (save-on-exit / mode-aware `config` reset via `last_owner_mode`) — DONE, HW-confirmed.
 - **Phase B Stage 1** (MAX_SLOTS, runtime `slot_count`, grown buffers) — DONE, HW-confirmed inert.
 - **Phase B Stage 2a** (parameterized table macro, extended `layout.u` to 32, grew `p1`/`p2`, added
-  32-distinct `layout.t` + tables) — DONE, build-verified.
+  32-distinct `layout.t` + tables) — DONE, HW-confirmed.
 - **Phase B Stage 2b** (live tables → `layout.t`, `update_character_set_` no-op for Tournament,
-  loop conversions to `slot_count`, `get_character_id_` bounds to 32) — DONE, build-verified,
-  **needs HW test**. Tournament should now show **32 distinct selectable portraits**.
-- **Phase B Stage 2b bugfixes** (HW-found) — DONE, build-verified, **needs HW test**:
+  loop conversions to `slot_count`, `get_character_id_` bounds to 32) — DONE, HW-confirmed.
+  Tournament shows **32 distinct selectable portraits**.
+- **Phase B Stage 2b bugfixes** (HW-found) — DONE, HW-confirmed:
   - *Inverted `slot_count` branch.* `before_css_setup_` used `bnel` (branch-likely) where it
     needed `beql`, so the 32-slot override fired for **12CB** and was skipped for **Tournament**.
     This caused BOTH reported HW bugs: Tournament showed only 24 icons, and 12CB crashed (TLB load
@@ -58,25 +57,31 @@ Buffer). `master` is the clean fallback. Build with the full sequence (`bass` �
   - *Extra 8 unselectable.* `CharacterSelect.get_character_id_` rejected any cursor with
     `ypos >= START_Y + 85` (3-row cutoff) before reaching the 12CB mapper, so the 4th row was
     never hit-tested. Raised the cutoff to `START_Y + 165` **for Tournament only** (12CB keeps 85).
-- **Phase B Stage 2c — centered block (render + hit-test)** — DONE, build-verified, **needs HW
-  test**. The 8 extra slots (ids 24-31) now render as a centered `CENTER_COLS x CENTER_ROWS`
-  (4x2) block below the 24-slot grid, and a dedicated cursor hit-test selects them there. See the
-  Stage 2c section for the geometry constants and the **deferred** token auto-position polish.
+- **Phase B Stage 2c — centered block (render + hit-test)** — DONE, HW-confirmed. The 8 extra
+  slots (ids 24-31) render as a centered `CENTER_COLS x CENTER_ROWS` (4x2) block below the 24-slot
+  grid, and a dedicated cursor hit-test selects them there. See the Stage 2c section for the
+  geometry constants.
 
-**Known follow-ups (where to resume — details in each phase section below):**
-1. **HW-test Phase B Stage 2b + 2c**: do all 32 portraits show, with the 8 extras as a centered
-   4x2 block, and are they selectable by both players (hover/cursor)? Is 12CB still identical
-   (and no longer crashing after a Tournament visit)? Are E.3/E.4 confirmed (stats not corrupted;
-   save-on-exit works)? HW-tune the block geometry via the `CENTER_*` constants (see Stage 2c).
-2. **Phase B Stage 2c — token auto-position for center slots (DONE, build-verified, needs HW
-   test):** all four slot↔screen mappings are now center-aware — render, cursor hit-test, and the
+**Status: code-complete and HW-confirmed.** The current `tourney-mode` build has been
+hardware-tested end to end: all 32 Tournament portraits show (24-slot grid + centered 4x2 block),
+all are selectable by both players, 12CB remains identical (no post-Tournament crash), and E.3/E.4
+behave correctly (stats not corrupted; save-on-exit works). The only remaining feature work is the
+**E.1/E.2 texture assets** (see Phase E + `ClaudeInsertingTourneyMenuTextures.md`).
+
+**Resolved follow-ups (kept for history — all HW-confirmed):**
+1. **Phase B Stage 2b + 2c** — HW-confirmed: all 32 portraits show with the 8 extras as a centered
+   4x2 block, selectable by both players; 12CB still identical (no longer crashing after a
+   Tournament visit); E.3/E.4 confirmed (stats not corrupted; save-on-exit works). The `CENTER_*`
+   geometry constants are HW-tuned.
+2. **Phase B Stage 2c — token auto-position for center slots (DONE, HW-confirmed):** all four
+   slot↔screen mappings are center-aware — render, cursor hit-test, and the
    two token auto-position paths (`token_autoposition_._vs_x_position` + `token_autoposition_y_fix_`,
    and `place_token_from_id_`). This fixed the HW bug where a token placed on a center character
    snapped to the old uniform 4th-row spot (just below the 3 rows) instead of onto the center
    portrait — i.e. "markers can't be moved below the 3 rows." Each token path computes
    `ccol/crow` for ids >= NUM_SLOTS and positions at `CENTER_X + ccol*W` / effective row
    `CENTER_ROW_BASE + crow` (matching render, plus each site's existing token offset).
-3. **Phase B — in-game custom editing (DONE, build-verified, needs HW test):** Tournament now
+3. **Phase B — in-game custom editing (DONE, HW-confirmed):** Tournament now
    defaults to the per-slot "custom" character set, with shared scroll-only editing (user's choice:
    one shared grid, not per-player; no randomize/copy/preset). No toggle widget re-added (Stage 3
    removed it). How it works: hold a slot's token and hold Z/R to scroll that slot through all
@@ -94,15 +99,37 @@ Buffer). `master` is the clean fallback. Build with the full sequence (`bass` �
      the `_portraits` re-render (jumps to `_portraits` instead of returning); its loop bound and
      `update_portrait_id_table_`'s bound changed from `NUM_SLOTS` to runtime `slot_count` (24 vs 32)
      so all 32 slots redraw/remap.
-4. **Phase B Stage 3 (DONE, build-verified, needs HW test):** the "Character Set" selector is no
+4. **Phase B Stage 3 (DONE, HW-confirmed):** the "Character Set" selector is no
    longer drawn for Tournament (it overlapped the new center block, and the roster is the fixed
    `layout.t`, not a cycleable preset). Both the display (`setup_` `_skip_character_set`) and the
    arrow press-checks (`handle_custom_presses_` `_check_character_set_p1` Tournament early-out) are
    gated off; `update_character_set_` was already a no-op for Tournament. RESET/BACK unaffected.
-5. **E.1** (real "Tournament" button texture) and **E.2** (T1/T2 title banners) — **asset tasks**;
-   workflow + exact offsets-to-report in **`ClaudeInsertingTourneyMenuTextures.md`**. E.2 also needs
-   the `update_css_header_` `tournament_type` branch + removal of the temp Phase D top-center label.
-6. **Minor elimination-darken/lock bugs** the user flagged for "later".
+**Remaining work:**
+- **E.1 + E.2 — DONE via font strings (build-verified, needs HW test).** Implemented WITHOUT
+  textures / without touching `roms/original.z64` (user's choice — every existing Remix CSS texture
+  is a base-ROM file-offset added via the injector pipeline, so the texture route would require
+  modifying `original.z64`). The font-string route uses the game's built-in `Render` string system.
+  See the **Phase E** section for details. (The texture-injection alternative is preserved in
+  `ClaudeInsertingTourneyMenuTextures.md` if real pixel-art banners are ever wanted.)
+  - **E.1:** the Remix Modes "Tournament" button renders a font-string "Tournament" label instead
+    of the Tug-of-War placeholder texture, via a custom creation routine
+    (`VsRemixMenu.create_tourney_button_`) wired through the `menu_button_table` `0x00` field.
+  - **E.2:** the placeholder title banner is hidden for Tournament on both the CSS
+    (`hide_tourney_banner_`) and results (`hide_tourney_results_banner_`) screens, and the
+    repurposed "Tournament 1/2" font label (formerly the temp Phase D center label, now top-left,
+    left-aligned) is the title. Results screen has no title text yet (possible follow-up).
+  - HW-tunables: button label X/alignment/scale; CSS title X/Y/scale/color; the button string does
+    not inherit the texture buttons' selected-highlight color swap.
+  - **Post-HW tweaks (build-verified):** button label scale bumped +80% (`0x3F600000` → `0x3FC9999A`
+    = 1.575) so "Tournament" isn't too small.
+
+**Post-HW bug fixes (build-verified, needs HW test):**
+- **T1 subsequent-match stocks** — a T1 winner was starting later matches with reduced stocks (only
+  the CSS count was reset). Fixed in `set_initial_stock_count_` — see the Phase D "RESOLVED" note.
+- **RESET didn't clear Tournament's 8 center icons** — `update_stock_fields_` (TCB ~1912, called by
+  `handle_reset_`) looped a hardcoded 24 portraits (6×4), so slots 24–31 stayed darkened/locked on
+  RESET. Fixed to loop the runtime `slot_count`/4 (24 for 12CB → unchanged; 32 for Tournament → all
+  icons cleared).
 
 ---
 
@@ -187,12 +214,18 @@ right 12 by `layout`). Making all slots unique/editable-to-any is Phase B.
   `current_game=-1`, and refills `stocks_by_portrait_id` from `num_stocks`. ⚠️ **This change is
   the suspected cause of the Phase E.4 save bug** — revisit it there.
 
-OPEN RISK (verify on HW): the per-match fighter stock might come from `vs.pN+0x0B` /
-game-struct `starting_stocks` (set from `vs.pN+0x0B`, ~TCB 5292) rather than being re-read from
-`stocks_by_portrait_id`. If a T1 winner does NOT start the next match at full, trace where the
-continuing fighter's `vs.pN+0x0B` is set for 12CB and reset it to `num_stocks` for T1 there.
+RESOLVED (was OPEN RISK, HW-confirmed bug): the per-match fighter stock did NOT come from
+`stocks_by_portrait_id` for a *continuing* fighter — `set_initial_stock_count_` (TCB ~3841, patches
+`0x8018D4AC`) returns the **previous match's remaining** ending-stocks (`0x0002(prev_match)`) via
+`bgtz t8, _end` whenever the fighter wasn't defeated. So the T1 survivor-reset (which only fixed
+`stocks_by_portrait_id`, the CSS-visible count) never reached the actual match — a T1 winner kept
+the reduced count. **Fix:** in `set_initial_stock_count_`, for Tournament + T1 only, skip the
+"keep previous remaining" branch and use the **per-portrait** stock count (`stocks_by_portrait_id`,
+already reset to `num_stocks` for survivors by `update_stocks_remaining_`). T2/12CB unchanged
+(still retain remaining). Same encoding on both paths (match-struct `0x0002` and
+`stocks_by_portrait_id` are both written from the same `t5`), so no off-by-one.
 
-## Bug fix — eliminated-character darken/lock in Tournament (DONE, HW-confirmed; minor bugs remain)
+## Bug fix — eliminated-character darken/lock in Tournament (DONE, HW-confirmed)
 
 Reported: a beaten fighter stayed selectable (not darkened/locked) in BOTH Tournament modes,
 while 12CB works. Decision: track elimination **per-slot** (only the exact slot played darkens)
@@ -216,18 +249,20 @@ Root causes (two):
    **Fix:** trigger on `t5 == -1` (real elimination) and skip slots equal to `0xFF` in the
    refill loop. T2/12CB paths unchanged.
 
-Both build-verified; linters pass; overlap checker shows only the 3 known conflicts.
+Both build-verified; linters pass; overlap checker shows only the 3 known conflicts. The minor
+darken/lock glitches that were flagged "for later" did **not** reproduce in the latest HW pass —
+considered resolved.
 
 ---
 
-## Phase B — 32 slots + remove stats (IN PROGRESS; hardest, heavy HW iteration)
+## Phase B — 32 slots + remove stats (DONE, HW-confirmed)
 
 **Design locked (user):** Tournament gets a **dedicated 32-distinct layout** (the 24 grid slots
 un-mirrored + 8 more in the center); 12CB keeps its shared 24-mirror layout untouched. All
 Tournament slots default to the per-side **custom** state (editable to any character). Claude
-auto-fills the roster; user tweaks later. Implemented in **build-verified stages**:
+auto-fills the roster; user tweaks later. Implemented in stages (all **DONE, HW-confirmed**):
 
-- **Stage 1 — foundation (DONE, build-verified):**
+- **Stage 1 — foundation (DONE, HW-confirmed):**
   - `constant MAX_SLOTS(32)` (TCB ~32) + runtime `slot_count` word (default 24).
   - `before_css_setup_` sets `slot_count` = 32 for Tournament / 24 for 12CB on every CSS entry.
   - Grew shared buffers to MAX_SLOTS: `config.stocks_by_portrait_id` (`fill 24`→`fill MAX_SLOTS`),
@@ -235,7 +270,7 @@ auto-fills the roster; user tweaks later. Implemented in **build-verified stages
   - **Inert/behavior-preserving:** nothing reads `slot_count` yet and 24-slot code ignores the
     extra buffer space, so 12CB **and** Tournament still run as 24-slot. Pure groundwork.
 
-- **Stage 2a — data (DONE, build-verified):**
+- **Stage 2a — data (DONE, HW-confirmed):**
   - Parameterized `create_portrait_tables(layout_type, layout, count)` (3-arg worker + 2-/1-arg
     delegates passing NUM_SLOTS); `while {count}` instead of `while NUM_SLOTS`.
   - Extended `layout.u` to 32 (slots 25-32 placeholders); grew `p1`/`p2` via
@@ -245,7 +280,7 @@ auto-fills the roster; user tweaks later. Implemented in **build-verified stages
     SONIC/SHEIK/MARINA/DEDEDE/GOEMON/BANJO/CRASH/PEACH. Builds clean (all symbols valid).
   - Still inert: nothing reads the 32-tables/`slot_count` at runtime yet.
 
-- **Stage 2b — runtime wiring (DONE, build-verified; needs HW test). Approach taken:** point the
+- **Stage 2b — runtime wiring (DONE, HW-confirmed). Approach taken:** point the
   live tables directly at the dedicated 32-distinct `layout.t` tables for Tournament (single shared
   full grid), rather than copying per-port. Specifics:
   - `force_ffa_and_stock_` (TCB ~1889): for Tournament set `id_table_pointer`/
@@ -265,7 +300,7 @@ auto-fills the roster; user tweaks later. Implemented in **build-verified stages
     `set_portrait_` redirect + default-to-custom still needed) — the grid is currently the fixed
     auto-filled roster.
 
-- **Stage 2c — centered block (render + hit-test DONE, build-verified, needs HW test):** the 8
+- **Stage 2c — centered block (render + hit-test DONE, HW-confirmed):** the 8
   extra slots (ids `NUM_SLOTS`..`MAX_SLOTS-1`) now render as a centered **`CENTER_COLS x CENTER_ROWS`
   = 4x2** block below the 24-slot grid (where the stats were), instead of a full-width 4th row.
 
@@ -381,7 +416,7 @@ auto-fills the roster; user tweaks later. Implemented in **build-verified stages
   "center" portraits where stats were). `portrait_x_position` is per-column; center slots need
   explicit coords. Expect HW tuning.
 
-- **Stage 3 — cleanup (DONE, build-verified, needs HW test):** removed the "Character Set" selector
+- **Stage 3 — cleanup (DONE, HW-confirmed):** removed the "Character Set" selector
   for Tournament (E.3 already removed Stocks Remaining + Best Character display/writes). The selector
   overlapped the new center block and is meaningless for Tournament (fixed `layout.t` roster, no
   preset cycling). Three gated changes (all `vs_mode_flag == TOURNEY`):
@@ -425,30 +460,53 @@ the shared code; mitigate with the per-phase 12CB smoke test + overlap checker.
 
 ---
 
-## Phase E — Cleanup (NOT STARTED; 4 independent parts)
+## Phase E — Cleanup (4 independent parts; all DONE — E.1/E.2 build-verified+needs HW test, E.3/E.4 HW-confirmed)
 
-> **Asset workflow for E.1 + E.2:** see `ClaudeInsertingTourneyMenuTextures.md` (the 3 textures
-> to create, which ROM files they go in — `0x006` button label, `0x0A06` title banners — the
-> append-only injector steps, and the offsets to report back so Claude can finish the ASM).
+> **E.1/E.2 were done with font strings, NOT textures** (user's choice — see below). The original
+> texture-injection workflow is preserved in `ClaudeInsertingTourneyMenuTextures.md` for reference
+> only (the "if we ever want real pixel-art banners" path); it is NOT what shipped.
 
-### E.1 — Real "Tournament" button texture
-The Remix Modes "Tournament" button still shows the **Tug of War** placeholder texture
-(`remix_menu_button_table` Tournament row references offset `0x000093B8`). Create/inject a
-"Tournament" button texture and point the row at it. This is a **binary asset task** (texture
-injection into the file table — see `CLAUDE.md` "Binary assets and the file system"), plus the
-one-line table edit in `VsRemixMenu.asm`.
+### E.1 — "Tournament" button label — DONE via font string (build-verified, needs HW test)
+**Why no texture:** every existing Remix CSS texture is a byte-offset into a base-ROM file (added
+via the injector pipeline), so a real button texture would require appending to / regenerating
+`roms/original.z64`. The user wanted to keep a clean `original.z64`, so the label is rendered from
+the game's built-in font instead.
 
-### E.2 — T1/T2 toggle drives the top-left title (not a separate label)
-Remove the temporary Phase D label (the `draw_string_pointer` + `update_tournament_type_pointer_`
-registration in `setup_`, and optionally the `tournament_type_pointer`/strings if unused).
-Instead make the **top-left title image** itself show Tournament 1 vs Tournament 2, exactly
-like Smashketball does: in `update_css_header_` (TCB 1946), the Smashketball branch picks
-between two title textures (`0x2C18` "Smashketball 1" / `0x2E88` "Smashketball 2") based on
-`Smashketball.type`. Mirror that for Tournament: branch on `tournament_type` to choose a
-"Tournament 1" vs "Tournament 2" title image in both `_vs` and `_results` (currently both use
-the `0x2048` placeholder). **Requires creating the two title textures** (asset task, like E.1).
+Implementation (`src/VsRemixMenu.asm`): the VS-mode menu is built from `TEXTURE_INIT_` image
+objects (no `draw_string` path), and `create_button_generic_` lives in a size-constrained patch
+region with no room to add a per-row branch. So the Tournament row routes through the
+`menu_button_table` **`0x00` "creation routine" field** to a new free-region routine
+**`create_tourney_button_`**, which mirrors generic button creation (`CREATE_OBJECT_` →
+`DISPLAY_INIT_` → `mnVSModeMakeButton` → `mnVSModeUpdateButton`) but draws a
+`Render.draw_string("Tournament")` in the menu's own **group `0x04` / room `0x02`** (so it renders
+and cleans up with the buttons) instead of a texture. The row's trailing text-offset (was the
+Tug-of-War placeholder `0x000093B8`) is zeroed/unused. HW-tunables: label X/alignment/scale; the
+string doesn't inherit the texture buttons' selected-highlight color swap.
 
-### E.3 — Tournament must not touch the "Stocks Remaining" / "Best Character" stats — DONE (build-verified, needs HW confirm)
+### E.2 — T1/T2 title via repurposed font label + hidden placeholder — DONE (build-verified, needs HW test)
+**Why no texture:** same reason as E.1 (would require modifying `original.z64`). Instead of driving
+a title *image*, the temp Phase D "Tournament 1/2" font label is **repurposed as the title** and the
+placeholder banner is hidden.
+
+Implementation (`src/TwelveCharBattle.asm`):
+- **Hide the placeholder banner for Tournament.** Vanilla draws the mode title banner from
+  `update_css_header_`'s chosen offset. New patches set the banner object's render flags to hide
+  (`0x0205` → `0x0024`, the standard hide idiom) for `vs_mode_flag == TOURNEY` only:
+  - `hide_tourney_banner_` — CSS (`_vs`): patches `0x80134518` (right after vanilla saves the banner
+    object pointer to `0x8013BDB0`), reproduces the two overwritten instructions.
+  - `hide_tourney_results_banner_` — results (`_results`): patches the results header routine's
+    epilogue at `0x80136820` (the results path doesn't save the pointer globally), reproduces the
+    epilogue. Results has no title text yet (possible follow-up; only the placeholder is removed).
+- **Repurpose the label as the title.** In `setup_` the existing
+  `Render.draw_string_pointer(... tournament_type_pointer ...)` moved from center (X=160/Y=36,
+  CENTER) to the title slot (X≈27/Y≈24, LEFT), still driven by `update_tournament_type_pointer_` →
+  `string_tournament_1`/`_2` (now permanent, not temporary).
+- The `update_css_header_` Tournament arms still pick `0x2048`, but that offset is now irrelevant
+  since the banner object is hidden. HW-tunables: title X/Y/scale/color.
+
+Build clean; both linters pass; overlap checker shows only the 3 known pre-existing conflicts.
+
+### E.3 — Tournament must not touch the "Stocks Remaining" / "Best Character" stats — DONE, HW-confirmed
 These per-side stats belong to 12CB and Tournament shares `config`, so a tournament session was
 corrupting them. All gated to `vs_mode_flag == TOURNEY`:
 - **Writes (the actual fix):**
@@ -470,7 +528,7 @@ corrupting them. All gated to `vs_mode_flag == TOURNEY`:
 
 Build clean; linters pass; overlap checker shows only the 3 known conflicts.
 
-### E.4 — Fix: exiting to main menu no longer saves data (12CB AND Tournament) — DONE (build-verified, needs HW confirm)
+### E.4 — Fix: exiting to main menu no longer saves data (12CB AND Tournament) — DONE, HW-confirmed
 Regression cause confirmed: the Phase D carryover fix in `before_css_setup_` reset the shared
 `config` on **every** fresh entry from the VS menu (`previous_screen == VS_GAME_MODE_MENU`),
 regardless of mode. Because 12CB and Tournament **share** `config`, backing out to the VS menu

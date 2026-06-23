@@ -1,5 +1,10 @@
 # ClaudeInsertingTourneyMenuTextures.md
 
+> ⚠️ **NOT what shipped.** E.1/E.2 were ultimately done with **font strings** (the game's built-in
+> `Render` text system), NOT textures — so `roms/original.z64` is untouched. See the E.1/E.2
+> sections of `claude-tournament.md`. This document is preserved as the **alternative** route to
+> follow only if real pixel-art button/title textures are ever wanted.
+
 How to add the texture assets needed to finish **Phase E.1** (real "Tournament" menu button
 label) and **Phase E.2** (T1/T2 title banners) of Tournament Mode. Companion to
 `claude-tournament.md`. This file captures both the reverse-engineered context **and** the

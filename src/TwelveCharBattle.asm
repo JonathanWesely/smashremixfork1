@@ -468,6 +468,25 @@ scope TwelveCharBattle {
     }
 
     // @ Description
+    // TOURNAMENT X table: same as portrait_x_position but WITHOUT the left/right +-8 half-gap (which
+    // exists to separate 12CB's P1-left / P2-right halves). Tournament is one unified grid, so the
+    // contiguous spacing lines the icons up with the round-bracket boxes (icon centers = icon_coords).
+    // 12CB keeps the +-8 table; force_ffa_and_stock_ points the render at the right one per mode.
+    portrait_x_position_t:
+    evaluate n(0)
+    while NUM_COLUMNS > {n} {
+        evaluate x(START_VISUAL + START_X + PORTRAIT_WIDTH * {n})
+        float32 {x}
+        evaluate n({n} + 1)
+    }
+    evaluate cn(0)
+    while CENTER_COLS > {cn} {
+        evaluate cx(CENTER_X + PORTRAIT_WIDTH * {cn})
+        float32 {cx}
+        evaluate cn({cn} + 1)
+    }
+
+    // @ Description
     // The stocks setting as set on CSS
     stocks:
     dw 3
@@ -1933,7 +1952,12 @@ scope TwelveCharBattle {
         addiu   t9, t9, -0x0001             // t9 = stocks, 0-based
 
         li      t1, config.stocks_by_portrait_id
-        lli     t2, 6                       // t3 = 24 portraits / 4 set each loop
+        // PHASE B: loop over the runtime slot count (24 for 12CB, 32 for Tournament) / 4 set each
+        // loop, so RESET clears all icons -- incl. Tournament's 8 center slots (24-31) -- back to
+        // full (un-darkened/unlocked). 12CB keeps slot_count == 24 (6 iterations, unchanged).
+        li      t2, slot_count
+        lw      t2, 0x0000(t2)              // t2 = slot count (24 or 32)
+        srl     t2, t2, 0x0002             // t2 = slot count / 4 (groups of 4)
         _loop:
         sb      t9, 0x0000(t1)              // update stocks remaining for this portrait
         sb      t9, 0x0001(t1)              // update stocks remaining for this portrait
@@ -2076,7 +2100,14 @@ scope TwelveCharBattle {
         _pointers_done:
 
         li      t0, CharacterSelect.portrait_x_position_pointer
-        li      t1, portrait_x_position
+        li      t1, portrait_x_position     // 12CB: +-8 half-gap table (P1-left / P2-right)
+        // TOURNAMENT: use the contiguous table so icons line up with the round-bracket boxes.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t2) // t2 = vs_mode_flag
+        lli     t3, VsRemixMenu.mode.TOURNEY
+        bne     t2, t3, _x_table_set
+        nop
+        li      t1, portrait_x_position_t   // Tournament: contiguous (no half-gap)
+        _x_table_set:
         sw      t1, 0x0000(t0)
 
         // set up stocks and settings
@@ -2340,6 +2371,56 @@ scope TwelveCharBattle {
         _end_results:
         jr      ra
         addiu   t1, r0, 0x0001              // original line 2
+    }
+
+    // @ Description
+    // E.2: For Tournament, hide the placeholder title banner on the VS CSS so it doesn't show
+    // behind the "Tournament 1/2" font label (which setup_ draws as the title). Vanilla saves the
+    // header banner object pointer to 0x8013BDB0 with `sw v0,0xbdb0(at)`; we patch that instruction
+    // to jump here, reproduce the two overwritten instructions, and set the object's render flags
+    // to hide (0x0205) for Tournament only. Other modes are byte-for-byte unchanged.
+    scope hide_tourney_banner_: {
+        OS.patch_start(0x132798, 0x80134518)
+        j       hide_tourney_banner_
+        nop
+        OS.patch_end()
+
+        sw      v0, 0xBDB0(at)              // original line: save banner object pointer (at = 0x80140000)
+        OS.read_word(VsRemixMenu.vs_mode_flag, t8) // t8 = vs_mode_flag
+        lli     t9, VsRemixMenu.mode.TOURNEY
+        bne     t8, t9, _done               // not Tournament -> leave banner visible
+        nop
+        lli     t8, 0x0205                  // t8 = render flags (hide)
+        sh      t8, 0x0024(v0)              // hide the placeholder banner object
+        _done:
+        addiu   at, r0, 0x0001              // original line: addiu at, zero, 1
+        j       0x80134520                  // return to vanilla
+        nop
+    }
+
+    // @ Description
+    // E.2: Mirror of hide_tourney_banner_ for the results screen. The results header-draw routine
+    // (0x80136788) creates the title banner but does not save its pointer globally, so we hide it in
+    // the routine's epilogue (v0 still = banner object). Reproduces the overwritten epilogue
+    // instructions. For Tournament only; other modes are unchanged. (Tournament has no results-screen
+    // title text -- a "Tournament 1/2" results label could be added later if desired.)
+    scope hide_tourney_results_banner_: {
+        OS.patch_start(0x1559C0, 0x80136820)
+        j       hide_tourney_results_banner_
+        nop
+        OS.patch_end()
+
+        OS.read_word(VsRemixMenu.vs_mode_flag, t8) // t8 = vs_mode_flag
+        lli     t9, VsRemixMenu.mode.TOURNEY
+        bne     t8, t9, _done               // not Tournament -> leave banner visible
+        nop
+        lli     t8, 0x0205                  // t8 = render flags (hide)
+        sh      t8, 0x0024(v0)              // hide the placeholder banner object
+        _done:
+        lw      ra, 0x0034(sp)              // original epilogue: restore ra
+        addiu   sp, sp, 0x0060              // original epilogue: deallocate frame
+        jr      ra
+        nop
     }
 
     // @ Description
@@ -3071,6 +3152,26 @@ scope TwelveCharBattle {
         lw      v0, 0x0000(v0)              // v0 = 1 if 12cb mode
         beqz    v0, _end                    // if not 12cb mode, skip
         nop
+
+        // TOURNAMENT: round-select button (cycle Round 1-5). Clickable any time on the Tournament
+        // CSS (a0 = cursor object here). check_press_ returns 1 if the cursor is over the label.
+        OS.read_word(VsRemixMenu.vs_mode_flag, v0) // v0 = vs_mode_flag
+        lli     v1, VsRemixMenu.mode.TOURNEY
+        bne     v0, v1, _skip_round_button  // not Tournament -> skip
+        nop
+        lui     a1, 0x42E4                  // a1 = button ulx (114.0)
+        lli     a2, 44                      // a2 = button width
+        lui     a3, 0x433A                  // a3 = button uly (186.0)
+        lli     t4, 12                      // t4 = button height
+        jal     CharacterSelect.check_press_ // v0 = 1 if cursor over the button
+        sw      t4, 0x0010(sp)              // 0x0010(sp) = button height
+        beqz    v0, _skip_round_button      // not pressed -> skip
+        nop
+        jal     cycle_round_                // advance round + redraw lines
+        nop
+        b       _end
+        nop
+        _skip_round_button:
 
         li      v0, config.status
         lw      v0, 0x0000(v0)              // v0 = 0 if not started
@@ -3815,6 +3916,24 @@ scope TwelveCharBattle {
         sll     t8, t8, 0x0003              // t8 = t8 * 8 (offset to previous match)
         addu    a0, t6, t8                  // t6 = previous match struct
         lb      t8, 0x0002(a0)              // t8 = remaining stocks (0xFFFFFFFF if no stocks remaining)
+
+        // TOURNAMENT 1: every match starts survivors at FULL stocks. The continuing-fighter path
+        // below would carry over the previous match's reduced remaining count. For T1, ignore it and
+        // use the per-portrait stock count instead -- update_stocks_remaining_ already reset every
+        // survivor's stocks_by_portrait_id to num_stocks when the previous match ended, so the
+        // portrait path returns full stocks for a continuing winner. T2 / 12CB keep the remaining
+        // count (fall through to the bgtz below).
+        OS.read_word(VsRemixMenu.vs_mode_flag, t7) // t7 = vs_mode_flag
+        lli     t9, VsRemixMenu.mode.TOURNEY
+        bne     t7, t9, _use_remaining_stocks // not Tournament -> keep remaining
+        nop
+        OS.read_word(tournament_type, t7)   // t7 = tournament_type
+        bnez    t7, _use_remaining_stocks   // Tournament 2 -> retain remaining
+        nop
+        b       _get_portrait_stock_count   // Tournament 1 -> full stocks via portrait count
+        lbu     t8, 0x000B(a0)              // t8 = current match portrait_id (delay slot)
+
+        _use_remaining_stocks:
         bgtz    t8, _end                    // if the player was not previously defeated, use remaining stocks
         nop
         lbu     t8, 0x000B(a0)              // t8 = portrait_id of current match
@@ -5581,15 +5700,35 @@ scope TwelveCharBattle {
         Render.draw_number(0x1E, GROUP_STARTED, config.p2.best_character_tkos_for, Render.update_live_string_, X_P2, 0x433B0000, 0x4040C0FF, 0x3F480000, Render.alignment.CENTER)
         _skip_best_character:
 
-        // TOURNAMENT (Phase D): live "Tournament 1/2" label near the title (Tournament only)
+        // TOURNAMENT (E.2): the live "Tournament 1/2" label IS the top-left title. The placeholder
+        // banner is hidden for Tournament (hide_tourney_banner_), so this font string drawn where
+        // the mode title banner sits (top-left, left-aligned) is the title. Tournament only.
         OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
         lli     t1, VsRemixMenu.mode.TOURNEY
         bne     t0, t1, _skip_tourney_label // not Tournament -> no label
         nop
         Render.register_routine(update_tournament_type_pointer_)
         nop
-        Render.draw_string_pointer(0x1E, GROUP_ALWAYS, tournament_type_pointer, Render.update_live_string_, 0x43200000, 0x42100000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
+        Render.draw_string_pointer(0x1E, GROUP_ALWAYS, tournament_type_pointer, Render.update_live_string_, 0x41D80000, 0x41C00000, 0xFFFFFFFF, 0x3F600000, Render.alignment.LEFT)
         _skip_tourney_label:
+
+        // TOURNAMENT (round bracket): reset the round state to Round 1, draw the clickable "Round N"
+        // label just above RESET, and draw the current round's matchup lines. Tournament only.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _skip_round_ui      // not Tournament -> no round UI
+        nop
+        li      t0, tournament_round
+        sw      r0, 0x0000(t0)              // default Round 1
+        li      t0, round_line_count
+        sw      r0, 0x0000(t0)              // no lines drawn yet (stale objects from a prior visit are freed)
+        li      t0, round_pointer
+        li      t1, string_round_1
+        sw      t1, 0x0000(t0)              // label shows "Round 1"
+        Render.draw_string_pointer(0x1E, GROUP_ALWAYS, round_pointer, Render.update_live_string_, 0x43080000, 0x433A0000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
+        jal     draw_round_lines_           // draw Round 1's matchup lines
+        nop
+        _skip_round_ui:
 
         // Reset button
         Render.draw_texture_at_offset(0x1E, GROUP_STARTED, 0x8013C4A0, 0x187A8, Render.NOOP, 0x43080000, 0x434E0000, 0xFFFFFFFF, 0x000000FF, 0x3F800000)
@@ -5720,6 +5859,453 @@ scope TwelveCharBattle {
         li      t0, tournament_type_pointer
         jr      ra
         sw      t1, 0x0000(t0)              // update pointer (delay slot)
+    }
+
+    // ============================================================================================
+    // TOURNAMENT ROUND BRACKET (Tournament only)
+    // A clickable "Round 1..5" label above RESET cycles the displayed round; each round draws white
+    // orthogonal matchup lines between the 32 character icons. Round 1 is implemented from a pair
+    // table; rounds 2-5 have empty placeholder tables until their pictures are provided.
+    // ============================================================================================
+
+    OS.align(4)
+    // 0 = Round 1 .. 4 = Round 5. Reset to 0 on every CSS entry (default Round 1).
+    tournament_round:; dw 0x00000000
+    // Number of line objects currently drawn (so a round change can destroy them).
+    round_line_count:; dw 0x00000000
+    // Live pointer for the "Round N" label (draw_string_pointer + update_live_string_).
+    round_pointer:; dw string_round_1
+
+    string_round_1:; String.insert("Round 1")
+    string_round_2:; String.insert("Round 2")
+    string_round_3:; String.insert("Round 3")
+    string_round_4:; String.insert("Round 4")
+    string_round_5:; String.insert("Round 5")
+
+    OS.align(4)
+    round_string_table:
+    dw string_round_1, string_round_2, string_round_3, string_round_4, string_round_5
+
+    // Center (x,y) of each of the 32 icons, in screen pixels. Icons are numbered 1-32 (see plan):
+    // top grid rows 1-3 = icons 1-24 (left->right), center block rows 1-2 = icons 25-32. Stored as
+    // halfwords because x reaches 265 (> a byte). Entry = dh x, dh y (4 bytes). HW-tunable.
+    OS.align(4)
+    icon_coords:
+    // top grid row 1 (y=50)
+    dh 55,50; dh 85,50; dh 115,50; dh 145,50; dh 175,50; dh 205,50; dh 235,50; dh 265,50
+    // top grid row 2 (y=80)
+    dh 55,80; dh 85,80; dh 115,80; dh 145,80; dh 175,80; dh 205,80; dh 235,80; dh 265,80
+    // top grid row 3 (y=110)
+    dh 55,110; dh 85,110; dh 115,110; dh 145,110; dh 175,110; dh 205,110; dh 235,110; dh 265,110
+    // center block row 1 (y=140) = icons 25-28
+    dh 115,140; dh 145,140; dh 175,140; dh 205,140
+    // center block row 2 (y=170) = icons 29-32
+    dh 115,170; dh 145,170; dh 175,170; dh 205,170
+
+    // Per-round group tables (1-based icon numbers, 2 bytes per entry). Each entry is the FIRST and
+    // LAST icon of a matchup group; draw_box_ outlines the bounding box of those two corners, so a
+    // round-1 entry boxes a pair (2 icons) and a round-2 entry boxes a group of 4. round_pairs_table
+    // holds {table pointer, entry count} per round. Rounds 3-5 are empty (count 0) for now.
+    OS.align(4)
+    // Round 1: horizontal adjacent pairs across the whole grid (each entry = the pair itself).
+    round_1_pairs:
+    db 1,2;   db 3,4;   db 5,6;   db 7,8       // top row 1
+    db 9,10;  db 11,12; db 13,14; db 15,16     // top row 2
+    db 17,18; db 19,20; db 21,22; db 23,24     // top row 3
+    db 25,26; db 27,28; db 29,30; db 31,32     // center block
+    // Round 2: groups of 4 (each entry = first,last icon of the group -> box around all four).
+    round_2_pairs:
+    db 1,4;   db 5,8                            // top row 1: left four / right four
+    db 9,12;  db 13,16                          // top row 2
+    db 17,20; db 21,24                          // top row 3
+    db 25,28; db 29,32                          // center block: row 1 / row 2
+    // Round 3: groups of 8 (each entry = first,last icon -> box around all eight).
+    round_3_pairs:
+    db 1,8                                      // top row 1 (all 8)
+    db 9,16                                     // top row 2
+    db 17,24                                    // top row 3
+    db 25,32                                    // center block (all 8, both rows)
+    // Round 4: groups of 16. Top half (rows 1-2 = 1-16) is a clean rectangle drawn here. The bottom
+    // half (row 3 + the narrower center block = 17-32) is L-shaped, so it's drawn as a hugging
+    // T-outline by draw_tee_17_32_ (called from draw_round_lines_), NOT as a bounding box.
+    round_4_pairs:
+    db 1,16                                     // top half (rows 1-2): clean rectangle, corners 1 & 16
+    round_5_pairs:                              // Round 5: no lines
+
+    OS.align(4)
+    round_pairs_table:
+    dw round_1_pairs, 16
+    dw round_2_pairs, 8
+    dw round_3_pairs, 4
+    dw round_4_pairs, 1
+    dw round_5_pairs, 0
+
+    // Object pointers for the currently-drawn line rectangles (so they can be destroyed on a round
+    // change). 16 pairs * 4 box edges = 64; 128 gives headroom for future rounds.
+    constant MAX_ROUND_LINES(128)
+    OS.align(4)
+    round_line_objects:; fill MAX_ROUND_LINES * 4, 0x00
+
+    // @ Description
+    // Draws one white line rectangle and appends its object to round_line_objects.
+    // @ Arguments  a0 = ulx, a1 = uly, a2 = width, a3 = height
+    OS.align(4)
+    scope add_line_: {
+        addiu   sp, sp,-0x0030             // allocate stack space
+        sw      ra, 0x0004(sp)             // save registers
+        sw      s1, 0x0008(sp)             // ~
+        sw      s2, 0x000C(sp)             // ~
+        sw      s3, 0x0010(sp)             // ~
+        sw      s4, 0x0014(sp)             // ~
+        sw      s5, 0x0018(sp)             // ~
+        sw      s6, 0x001C(sp)             // ~
+
+        or      s1, r0, a0                 // s1 = ulx
+        or      s2, r0, a1                 // s2 = uly
+        or      s3, r0, a2                 // s3 = width
+        or      s4, r0, a3                 // s4 = height
+        li      s5, 0xFFFFFFFF             // s5 = white
+        lli     s6, OS.FALSE               // s6 = alpha blending off (solid)
+        lli     a0, 0x001E                 // a0 = room (CSS)
+        jal     Render.draw_rectangle_     // v0 = line object
+        lli     a1, setup_.GROUP_ALWAYS    // a1 = group (always visible)
+
+        li      t0, round_line_count
+        lw      t1, 0x0000(t0)             // t1 = current count
+        sll     t2, t1, 0x0002             // t2 = count * 4
+        li      t3, round_line_objects
+        addu    t3, t3, t2                 // t3 = slot address
+        sw      v0, 0x0000(t3)             // store object pointer
+        addiu   t1, t1, 0x0001             // count++
+        sw      t1, 0x0000(t0)             // save count
+
+        lw      ra, 0x0004(sp)             // restore registers
+        lw      s1, 0x0008(sp)             // ~
+        lw      s2, 0x000C(sp)             // ~
+        lw      s3, 0x0010(sp)             // ~
+        lw      s4, 0x0014(sp)             // ~
+        lw      s5, 0x0018(sp)             // ~
+        lw      s6, 0x001C(sp)             // ~
+        jr      ra
+        addiu   sp, sp, 0x0030             // deallocate stack space
+    }
+
+    // @ Description
+    // Outlines a matchup: draws a white 2px rectangle border around the bounding box of the two
+    // paired icons (icons are 30x30 and icon_coords are centers, so half-extent = 15). Adjacent
+    // pairs' boxes share edges, producing the "lines between non-paired icons" look.
+    // @ Arguments  a0 = icon A index (0-based), a1 = icon B index (0-based)
+    OS.align(4)
+    constant ICON_HALF(15)
+    scope draw_box_: {
+        addiu   sp, sp,-0x0030             // allocate stack space
+        sw      ra, 0x0004(sp)             // save registers
+        sw      s0, 0x0008(sp)             // s0 = minX (left)
+        sw      s1, 0x000C(sp)             // s1 = minY (top)
+        sw      s2, 0x0010(sp)             // s2 = width
+        sw      s3, 0x0014(sp)             // s3 = height
+        sw      s4, 0x0018(sp)             // s4 = maxX (right)
+        sw      s5, 0x001C(sp)             // s5 = maxY (bottom)
+
+        li      t0, icon_coords
+        sll     t1, a0, 0x0002             // A index * 4
+        addu    t1, t0, t1
+        lhu     t2, 0x0000(t1)             // t2 = xA
+        lhu     t3, 0x0002(t1)             // t3 = yA
+        sll     t1, a1, 0x0002             // B index * 4
+        addu    t1, t0, t1
+        lhu     t4, 0x0000(t1)             // t4 = xB
+        lhu     t5, 0x0002(t1)             // t5 = yB
+
+        // X extent: minX = min(xA,xB) - 15, maxX = max(xA,xB) + 15
+        sltu    t6, t2, t4                 // t6 = 1 if xA < xB
+        bnez    t6, _x_a_min
+        nop
+        or      s0, r0, t4                 // xB <= xA: minX' = xB
+        or      s4, r0, t2                 //           maxX' = xA
+        b       _x_done
+        nop
+        _x_a_min:
+        or      s0, r0, t2                 // minX' = xA
+        or      s4, r0, t4                 // maxX' = xB
+        _x_done:
+        addiu   s0, s0, -ICON_HALF         // minX = min - 15
+        addiu   s4, s4, ICON_HALF          // maxX = max + 15
+        subu    s2, s4, s0                 // width = maxX - minX
+
+        // Y extent: minY = min(yA,yB) - 15, maxY = max(yA,yB) + 15
+        sltu    t6, t3, t5                 // t6 = 1 if yA < yB
+        bnez    t6, _y_a_min
+        nop
+        or      s1, r0, t5                 // yB <= yA: minY' = yB
+        or      s5, r0, t3                 //           maxY' = yA
+        b       _y_done
+        nop
+        _y_a_min:
+        or      s1, r0, t3                 // minY' = yA
+        or      s5, r0, t5                 // maxY' = yB
+        _y_done:
+        addiu   s1, s1, -ICON_HALF         // minY = min - 15
+        addiu   s5, s5, ICON_HALF          // maxY = max + 15
+        subu    s3, s5, s1                 // height = maxY - minY
+
+        // top edge (minX, minY, width, 2)
+        or      a0, r0, s0
+        or      a1, r0, s1
+        or      a2, r0, s2
+        jal     add_line_
+        lli     a3, 0x0002
+        // bottom edge (minX, maxY-2, width, 2)
+        or      a0, r0, s0
+        addiu   a1, s5, -0x0002
+        or      a2, r0, s2
+        jal     add_line_
+        lli     a3, 0x0002
+        // left edge (minX, minY, 2, height)
+        or      a0, r0, s0
+        or      a1, r0, s1
+        lli     a2, 0x0002
+        jal     add_line_
+        or      a3, r0, s3
+        // right edge (maxX-2, minY, 2, height)
+        addiu   a0, s4, -0x0002
+        or      a1, r0, s1
+        lli     a2, 0x0002
+        jal     add_line_
+        or      a3, r0, s3
+
+        lw      ra, 0x0004(sp)             // restore registers
+        lw      s0, 0x0008(sp)             // ~
+        lw      s1, 0x000C(sp)             // ~
+        lw      s2, 0x0010(sp)             // ~
+        lw      s3, 0x0014(sp)             // ~
+        lw      s4, 0x0018(sp)             // ~
+        lw      s5, 0x001C(sp)             // ~
+        jr      ra
+        addiu   sp, sp, 0x0030             // deallocate stack space
+    }
+
+    // @ Description
+    // Draws the current tournament_round's matchup lines (appending to round_line_objects). Assumes
+    // round_line_count has already been reset/destroyed by the caller.
+    OS.align(4)
+    scope draw_round_lines_: {
+        addiu   sp, sp,-0x0020             // allocate stack space
+        sw      ra, 0x0004(sp)             // save registers
+        sw      s0, 0x0008(sp)             // s0 = pair pointer
+        sw      s1, 0x000C(sp)             // s1 = remaining pair count
+
+        li      t0, tournament_round
+        lw      t0, 0x0000(t0)             // t0 = round (0-4)
+        sll     t1, t0, 0x0003             // t1 = round * 8 (table entry size)
+        li      t2, round_pairs_table
+        addu    t2, t2, t1
+        lw      s0, 0x0000(t2)             // s0 = pair table pointer
+        lw      s1, 0x0004(t2)             // s1 = pair count
+
+        _loop:
+        beqz    s1, _done                  // no more pairs
+        nop
+        lbu     a0, 0x0000(s0)             // a0 = icon A (1-based)
+        lbu     a1, 0x0001(s0)             // a1 = icon B (1-based)
+        addiu   a0, a0, -0x0001            // -> 0-based
+        jal     draw_box_                  // outline this matchup
+        addiu   a1, a1, -0x0001            // -> 0-based (delay)
+        addiu   s0, s0, 0x0002             // next pair
+        b       _loop
+        addiu   s1, s1, -0x0001            // count-- (delay)
+
+        _done:
+        // Round 4 (index 3): the 17-32 group is L-shaped (full-width row 3 + narrower center block),
+        // so draw its hugging T-outline rather than a bounding box that would spill into the side panels.
+        li      t0, tournament_round
+        lw      t0, 0x0000(t0)
+        lli     t1, 0x0003                 // round 4
+        bne     t0, t1, _no_tee
+        nop
+        jal     draw_tee_17_32_
+        nop
+        _no_tee:
+
+        lw      ra, 0x0004(sp)             // restore registers
+        lw      s0, 0x0008(sp)             // ~
+        lw      s1, 0x000C(sp)             // ~
+        jr      ra
+        addiu   sp, sp, 0x0020             // deallocate stack space
+    }
+
+    // @ Description
+    // Draws the hugging T-outline for round 4's bottom-half group (icons 17-32): a full-width box
+    // around row 3 (icons 17-24) that steps in to wrap the narrower center block (icons 25-32) below
+    // it, so the outline follows the icons instead of spilling into the empty side regions. Edges are
+    // derived from icon_coords (icons 17/24 for row 3, 25/32 for the center block) so they track any
+    // icon-position tuning. 8 segments, all white 2px via add_line_.
+    OS.align(4)
+    scope draw_tee_17_32_: {
+        addiu   sp, sp,-0x0030             // allocate stack space
+        sw      ra, 0x0004(sp)             // save registers
+        sw      s0, 0x0008(sp)             // s0 = row3_left
+        sw      s1, 0x000C(sp)             // s1 = row3_right
+        sw      s2, 0x0010(sp)             // s2 = row3_top
+        sw      s3, 0x0014(sp)             // s3 = row3_bottom (= center_top)
+        sw      s4, 0x0018(sp)             // s4 = center_left
+        sw      s5, 0x001C(sp)             // s5 = center_right
+        sw      s6, 0x0020(sp)             // s6 = center_bottom
+
+        li      t0, icon_coords
+        lhu     t1, 0x0040(t0)             // x17 (icon 17 = index 16)
+        lhu     t2, 0x0042(t0)             // y17
+        addiu   s0, t1, -ICON_HALF         // row3_left  = x17 - 15
+        addiu   s2, t2, -ICON_HALF         // row3_top   = y17 - 15
+        addiu   s3, t2, ICON_HALF          // row3_bottom= y17 + 15
+        lhu     t1, 0x005C(t0)             // x24 (icon 24 = index 23)
+        addiu   s1, t1, ICON_HALF          // row3_right = x24 + 15
+        lhu     t1, 0x0060(t0)             // x25 (icon 25 = index 24)
+        addiu   s4, t1, -ICON_HALF         // center_left  = x25 - 15
+        lhu     t1, 0x007C(t0)             // x32 (icon 32 = index 31)
+        lhu     t2, 0x007E(t0)             // y32
+        addiu   s5, t1, ICON_HALF          // center_right  = x32 + 15
+        addiu   s6, t2, ICON_HALF          // center_bottom = y32 + 15
+
+        // 1. top edge of row 3
+        or      a0, r0, s0
+        or      a1, r0, s2
+        subu    a2, s1, s0
+        jal     add_line_
+        lli     a3, 0x0002
+        // 2. row 3 left side
+        or      a0, r0, s0
+        or      a1, r0, s2
+        lli     a2, 0x0002
+        jal     add_line_
+        subu    a3, s3, s2
+        // 3. row 3 right side
+        addiu   a0, s1, -0x0002
+        or      a1, r0, s2
+        lli     a2, 0x0002
+        jal     add_line_
+        subu    a3, s3, s2
+        // 4. left shoulder (row3 bottom, left of center block)
+        or      a0, r0, s0
+        addiu   a1, s3, -0x0002
+        subu    a2, s4, s0
+        jal     add_line_
+        lli     a3, 0x0002
+        // 5. right shoulder (row3 bottom, right of center block)
+        or      a0, r0, s5
+        addiu   a1, s3, -0x0002
+        subu    a2, s1, s5
+        jal     add_line_
+        lli     a3, 0x0002
+        // 6. center block left side
+        or      a0, r0, s4
+        or      a1, r0, s3
+        lli     a2, 0x0002
+        jal     add_line_
+        subu    a3, s6, s3
+        // 7. center block right side
+        addiu   a0, s5, -0x0002
+        or      a1, r0, s3
+        lli     a2, 0x0002
+        jal     add_line_
+        subu    a3, s6, s3
+        // 8. center block bottom
+        or      a0, r0, s4
+        addiu   a1, s6, -0x0002
+        subu    a2, s5, s4
+        jal     add_line_
+        lli     a3, 0x0002
+
+        lw      ra, 0x0004(sp)             // restore registers
+        lw      s0, 0x0008(sp)             // ~
+        lw      s1, 0x000C(sp)             // ~
+        lw      s2, 0x0010(sp)             // ~
+        lw      s3, 0x0014(sp)             // ~
+        lw      s4, 0x0018(sp)             // ~
+        lw      s5, 0x001C(sp)             // ~
+        lw      s6, 0x0020(sp)             // ~
+        jr      ra
+        addiu   sp, sp, 0x0030             // deallocate stack space
+    }
+
+    // @ Description
+    // Destroys the currently-drawn line objects, then draws the current round's lines. Used when the
+    // round changes (the initial draw in setup_ calls draw_round_lines_ directly with count = 0).
+    OS.align(4)
+    scope redraw_round_lines_: {
+        addiu   sp, sp,-0x0020             // allocate stack space
+        sw      ra, 0x0004(sp)             // save registers
+        sw      s0, 0x0008(sp)             // s0 = index
+        sw      s1, 0x000C(sp)             // s1 = count
+
+        li      t0, round_line_count
+        lw      s1, 0x0000(t0)             // s1 = number of line objects to destroy
+        or      s0, r0, r0                 // s0 = index 0
+
+        _destroy_loop:
+        beq     s0, s1, _destroyed         // all destroyed
+        nop
+        sll     t1, s0, 0x0002             // t1 = index * 4
+        li      t2, round_line_objects
+        addu    t2, t2, t1
+        lw      a0, 0x0000(t2)             // a0 = object pointer
+        beqz    a0, _destroy_next          // null -> skip
+        nop
+        jal     Render.DESTROY_OBJECT_     // destroy the line object (preserves s0/s1)
+        nop
+        _destroy_next:
+        addiu   s0, s0, 0x0001             // index++
+        b       _destroy_loop
+        nop
+
+        _destroyed:
+        li      t0, round_line_count
+        sw      r0, 0x0000(t0)             // reset count to 0
+        jal     draw_round_lines_          // draw the new round's lines
+        nop
+
+        lw      ra, 0x0004(sp)             // restore registers
+        lw      s0, 0x0008(sp)             // ~
+        lw      s1, 0x000C(sp)             // ~
+        jr      ra
+        addiu   sp, sp, 0x0020             // deallocate stack space
+    }
+
+    // @ Description
+    // Round-select button handler: advance tournament_round (Round 1->2->...->5->1), update the
+    // label pointer, redraw the matchup lines, and play a click sound. Called from
+    // handle_custom_presses_ when the "Round N" button is clicked.
+    OS.align(4)
+    scope cycle_round_: {
+        addiu   sp, sp,-0x0010             // allocate stack space
+        sw      ra, 0x0004(sp)             // save ra
+
+        li      t0, tournament_round
+        lw      t1, 0x0000(t0)             // t1 = current round
+        addiu   t1, t1, 0x0001             // round++
+        sltiu   t2, t1, 0x0005             // t2 = 1 if < 5
+        bnez    t2, _store
+        nop
+        or      t1, r0, r0                 // wrap 5 -> 0
+        _store:
+        sw      t1, 0x0000(t0)             // save round
+
+        sll     t2, t1, 0x0002             // t2 = round * 4
+        li      t3, round_string_table
+        addu    t3, t3, t2
+        lw      t2, 0x0000(t3)             // t2 = string_round_{N}
+        li      t3, round_pointer
+        sw      t2, 0x0000(t3)             // update label pointer
+
+        jal     redraw_round_lines_        // destroy old + draw new round's lines
+        nop
+
+        jal     0x800269C0                 // play click FGM
+        addiu   a0, r0, 0x009E             // a0 = FGM id
+
+        lw      ra, 0x0004(sp)             // restore ra
+        jr      ra
+        addiu   sp, sp, 0x0010             // deallocate stack space
     }
 
     string_reset_line_1:;  String.insert("Game reset requested by  P.")

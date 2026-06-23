@@ -98,8 +98,14 @@ scope VsRemixMenu {
     dw 0;           db 0x10, mode.KOTH,         0x1, 0x0; dh 0x42BC, 0x42C0; dw 0x000084B8 // King of the Hill
     dw 0;           db 0x10, mode.SMASHKETBALL, 0x1, 0x0; dh 0x42A9, 0x42FF; dw 0x00008C38 // Smashketball
     dw 0;           db 0x10, mode.TUG_OF_WAR,   0x1, 0x0; dh 0x4294, 0x431E; dw 0x000093B8 // Tug of War
-    dw 0;           db 0x10, mode.TOURNEY,      0x1, 0x1; dh 0x4260, 0x433E; dw 0x000093B8 // Tournament -- 0x07=1 reuses the 12CB CSS; placeholder text texture (reuses Tug of War's)
+    // Tournament: 0x00 = custom creation routine (draws a font-string "Tournament" label instead of
+    // a texture, so no texture asset / no original.z64 change -- E.1). 0x07=1 reuses the 12CB CSS.
+    // The trailing text-offset (0x0C) is unused now (the routine renders the string itself).
+    dw create_tourney_button_; db 0x10, mode.TOURNEY, 0x1, 0x1; dh 0x4260, 0x433E; dw 0x00000000 // Tournament
     constant PAGE_2_MAX(0x5)
+
+    // "Tournament" button label, rendered as font text (E.1) -- no texture asset needed.
+    string_tournament:; String.insert("Tournament")
 
     // @ Description
     // Button graphic positions for the Remix Modes page (page 2). 6 slots, ~20%
@@ -113,6 +119,82 @@ scope VsRemixMenu {
     dh 0x4281, 0x42F9; // 4 (64.8, 124.6)
     dh 0x4239, 0x431B; // 5 (46.4, 155.8)
     dh 0x41E0, 0x433B; // 6 (28, 187)
+
+    // @ Description
+    // Custom creation routine for the Tournament button (E.1). Mirrors create_button_generic_'s
+    // button-object creation (CREATE_OBJECT_ -> DISPLAY_INIT_ -> mnVSModeMakeButton ->
+    // mnVSModeUpdateButton) but draws a font-string "Tournament" label instead of a file-offset
+    // texture, so no texture asset is needed and roms/original.z64 is untouched. Lives in the free
+    // custom region (no size-constrained patch), invoked via the menu_button_table 0x00 field
+    // (create_menu_button_ calls it via jalr, then branches to _finish).
+    // On entry: sp = create_menu_button_'s frame (0x28); caller's index at 0x0020(sp), table entry
+    // at 0x0018(sp); ra = create_menu_button_._finish path (must be preserved).
+    scope create_tourney_button_: {
+        addiu   sp, sp, -0x0028             // allocate own frame
+        sw      ra, 0x0024(sp)              // preserve ra (return into create_menu_button_)
+        lw      t0, 0x0040(sp)              // t0 = menu_button_table entry (caller 0x0018)
+        sw      t0, 0x0018(sp)              // stash table entry
+        lw      t0, 0x0048(sp)              // t0 = button index (caller 0x0020)
+        sw      t0, 0x0020(sp)              // stash index
+
+        // create the button object (group 4)
+        or      a0, r0, r0                  // a0 = Global Object ID
+        or      a1, r0, r0                  // a1 = no per-frame routine
+        addiu   a2, r0, 0x0004              // a2 = group
+        jal     Render.CREATE_OBJECT_       // v0 = button object
+        lui     a3, 0x8000                  // a3 = display order
+        sw      v0, 0x001C(sp)              // save button object
+
+        // store button object reference in the menu button object array, save table entry on object
+        lw      t6, 0x0020(sp)              // t6 = index
+        sll     t6, t6, 0x0002              // t6 = offset in object array
+        li      at, 0x80134930              // at = menu button object array start
+        addu    at, at, t6                  // at = slot address
+        sw      v0, 0x0000(at)              // store button object reference
+        lw      at, 0x0018(sp)              // at = table entry
+        sw      at, 0x0084(v0)              // save table entry on object (used by click handler)
+
+        // initialize display object
+        or      a0, v0, r0                  // a0 = object
+        li      a1, Render.TEXTURE_RENDER_  // a1 = texture render routine
+        addiu   a2, r0, 0x0002              // a2 = room
+        addiu   t6, r0, 0xFFFF              // t6 = -1
+        sw      t6, 0x0010(sp)              // 0x0010(sp) = -1
+        jal     Render.DISPLAY_INIT_        // initialize display object
+        lui     a3, 0x8000                  // a3 = display order
+
+        // position the button (Tournament is always on page 2 -> button_positions_p2)
+        li      at, button_positions_p2     // at = page 2 position table
+        lw      t6, 0x0020(sp)              // t6 = index
+        sll     t6, t6, 0x0002              // t6 = offset in position table
+        addu    at, at, t6                  // at = position entry
+        lw      a0, 0x001C(sp)              // a0 = button object
+        lhu     a1, 0x0000(at)              // a1 = button X, unshifted
+        sll     a1, a1, 0x0010              // a1 = button X
+        lhu     a2, 0x0002(at)              // a2 = button Y, unshifted
+        sll     a2, a2, 0x0010              // a2 = button Y
+        jal     0x80132024                  // mnVSModeMakeButton()
+        addiu   a3, r0, 0x0011              // a3 = width
+
+        // set highlight state if this button is the cursor's
+        lui     t7, 0x8013
+        lw      t7, 0x4948(t7)              // t7 = cursor index
+        lw      a0, 0x0020(sp)              // a0 = index
+        or      a1, r0, r0                  // a1 = button_status (0 = default)
+        beql    t7, a0, pc() + 8            // if this button is highlighted, set it
+        lli     a1, 0x0001                  // a1 = button_status highlighted
+        jal     0x80131F4C                  // mnVSModeUpdateButton()
+        lw      a0, 0x001C(sp)              // a0 = button object
+
+        // draw the "Tournament" label as font text (room 2 / group 4 -> same context as buttons)
+        // scale 0x3FC9999A = 1.575 (0.875 * 1.8, +80% over the original button-text size)
+        Render.draw_string(0x02, 0x04, string_tournament, Render.NOOP, 0x42600000, 0x433E0000, 0x000000FF, 0x3FC9999A, Render.alignment.LEFT)
+
+        lw      ra, 0x0024(sp)              // restore ra
+        addiu   sp, sp, 0x0028              // deallocate frame
+        jr      ra
+        nop
+    }
 
     // @ Description
     // The following patches enable a new button on the VS Game Mode menu (on page 1)
