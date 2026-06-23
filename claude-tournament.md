@@ -62,11 +62,13 @@ Buffer). `master` is the clean fallback. Build with the full sequence (`bass` �
   grid, and a dedicated cursor hit-test selects them there. See the Stage 2c section for the
   geometry constants.
 
-**Status: code-complete and HW-confirmed.** The current `tourney-mode` build has been
+**Status: feature-complete and HW-confirmed.** The current `tourney-mode` build has been
 hardware-tested end to end: all 32 Tournament portraits show (24-slot grid + centered 4x2 block),
-all are selectable by both players, 12CB remains identical (no post-Tournament crash), and E.3/E.4
-behave correctly (stats not corrupted; save-on-exit works). The only remaining feature work is the
-**E.1/E.2 texture assets** (see Phase E + `ClaudeInsertingTourneyMenuTextures.md`).
+all are selectable by both players, 12CB remains identical (no post-Tournament crash), E.3/E.4
+behave correctly (stats not corrupted; save-on-exit works), the font-string "Tournament" button +
+"Tournament 1/2" title render (E.1/E.2), the round-bracket overlay works for all 5 rounds with the
+icons aligned to the boxes, and matchup setup after a match is unrestricted (CPU token re-grab +
+free re-selection). See the **Feature summary** and **Round-bracket overlay** sections below.
 
 **Resolved follow-ups (kept for history — all HW-confirmed):**
 1. **Phase B Stage 2b + 2c** — HW-confirmed: all 32 portraits show with the 8 extras as a centered
@@ -109,8 +111,8 @@ behave correctly (stats not corrupted; save-on-exit works). The only remaining f
   textures / without touching `roms/original.z64` (user's choice — every existing Remix CSS texture
   is a base-ROM file-offset added via the injector pipeline, so the texture route would require
   modifying `original.z64`). The font-string route uses the game's built-in `Render` string system.
-  See the **Phase E** section for details. (The texture-injection alternative is preserved in
-  `ClaudeInsertingTourneyMenuTextures.md` if real pixel-art banners are ever wanted.)
+  See the **Phase E** section for details. (A texture-injection alternative was considered and
+  rejected; it would require regenerating `roms/original.z64`. The font route avoids that entirely.)
   - **E.1:** the Remix Modes "Tournament" button renders a font-string "Tournament" label instead
     of the Tug-of-War placeholder texture, via a custom creation routine
     (`VsRemixMenu.create_tourney_button_`) wired through the `menu_button_table` `0x00` field.
@@ -130,6 +132,81 @@ behave correctly (stats not corrupted; save-on-exit works). The only remaining f
   `handle_reset_`) looped a hardcoded 24 portraits (6×4), so slots 24–31 stayed darkened/locked on
   RESET. Fixed to loop the runtime `slot_count`/4 (24 for 12CB → unchanged; 32 for Tournament → all
   icons cleared).
+
+---
+
+## Feature summary — what Tournament Mode is, and how each piece was built
+
+### Tournament 1 vs Tournament 2
+`TwelveCharBattle.tournament_type` (0 = Tournament 1, 1 = Tournament 2; default 0). Toggled with the
+top FFA/Team button (repurposed via `Smashketball.enable_toggling_mode_`) and shown as the top-left
+CSS title ("Tournament 1" / "Tournament 2"). Both modes play a manually-arranged single-elimination
+bracket of 1v1 matches; the difference is how stocks carry between matches:
+
+- **Tournament 1** — every match starts all surviving characters at **full** stocks. Characters lose
+  stocks during a match, but a winner (and any non-eliminated character) begins its next bracket
+  match back at `num_stocks`. Implemented in two places that have to agree: the CSS-visible per-slot
+  count (`update_stocks_remaining_` resets every survivor's `stocks_by_portrait_id` to `num_stocks`
+  the moment a fighter is eliminated) **and** the real per-match stock count
+  (`set_initial_stock_count_` uses the per-portrait count instead of carrying over the previous
+  match's remaining stocks).
+- **Tournament 2** — survivors **retain** their remaining stocks between matches (vanilla 12CB
+  carry-over); a character whittled down stays whittled down.
+- **Both** — losing all stocks **eliminates** a character: that slot darkens and locks (unselectable)
+  for the rest of the session, tracked per-slot via `stocks_by_portrait_id` (`0xFF` = eliminated).
+
+### How each feature was built (all gated to `vs_mode_flag == TOURNEY`; 12CB stays byte-identical)
+- **Reuse the whole 12CB CSS + engine** — selecting Tournament sets `twelve_cb_flag`, so 12CB's
+  character-select, match engine, and darken-on-elimination are reused wholesale. (Phase A)
+- **Any character for either player** — lifted 12CB's per-side grid-half restriction
+  (`get_character_id_`, `get_portrait_id_`, `is_character_valid_for_port_`). (Phase C)
+- **32 distinct selectable characters** — a dedicated 32-slot layout (`layout.t`): the 24-slot grid
+  un-mirrored plus an 8-icon centered 4×2 block (where the stats text used to be), with a runtime
+  `slot_count` (24 vs 32), a center-block render + cursor hit-test + token auto-position, and in-game
+  per-slot editing (hold a token + Z/R to scroll a slot through every character). (Phase B)
+- **No corrupted 12CB stats / proper save-on-exit** — Tournament shares 12CB's `config`, so it's
+  stopped from writing the per-side "Stocks Remaining"/"Best Character" stats, and the shared-state
+  reset was made mode-aware (`last_owner_mode`) so re-entering a mode preserves its session. (E.3/E.4)
+- **"Tournament" button label + "Tournament 1/2" title** — done with the game's built-in **font**, NOT
+  textures (so `roms/original.z64` is never modified): `VsRemixMenu.create_tourney_button_` draws the
+  menu button's label, and the placeholder CSS/results title banner is hidden
+  (`hide_tourney_banner_` / `hide_tourney_results_banner_`) while a repurposed font label is the title.
+  (E.1/E.2 — see also the deleted texture-injection doc, replaced by this font route.)
+- **Round-bracket overlay** — a clickable "Round 1–5" button above RESET draws white matchup-outline
+  boxes between the icons per round (see the dedicated section below).
+- **Icons aligned to the bracket boxes** — Tournament renders from a contiguous portrait-X table
+  (`portrait_x_position_t`, without 12CB's ±8 P1-left/P2-right half-gap) so the single unified grid
+  lines up with the boxes; the render pointer is switched per-mode in `force_ffa_and_stock_`.
+- **Free matchup setup after a match** — removed two 12CB "keep your character" restrictions for
+  Tournament: P1 can re-grab the CPU's selector token (`prevent_token_pickup_`) and assign it **any**
+  live (non-eliminated) character (`prevent_defeated_char_select_`).
+
+---
+
+## Round-bracket overlay (TCB)
+
+A clickable **"Round 1–5"** font label sits just above RESET on the Tournament CSS; clicking it
+cycles the displayed round and redraws white **matchup-outline boxes** between the character icons,
+so you can lay out and read the bracket.
+
+- **Button + label**: `tournament_round` (0–4 = Round 1–5), `round_pointer` + `string_round_1..5` drive
+  a live `draw_string_pointer` label in `setup_` (GROUP_ALWAYS, above RESET). The click is detected in
+  `handle_custom_presses_` via `CharacterSelect.check_press_` (clickable any time on the Tournament
+  CSS) → `cycle_round_` advances the round (mod 5), updates the label pointer, plays a click FGM, and
+  redraws the lines. The round resets to 1 on every CSS entry.
+- **Lines are orthogonal** (the engine's `Render.draw_rectangle` is axis-aligned). `icon_coords` holds
+  the 32 icon centers — the single, HW-tunable source of truth for all line positions. Per-round group
+  tables (`round_1_pairs`…`round_5_pairs`, dispatched via `round_pairs_table` = {pointer, count} per
+  round) list each group as its **first,last** icon; `draw_box_` outlines the bounding box of those two
+  corners (so the same routine boxes a pair, a group of 4, 8, …). `add_line_` draws each white 2px
+  rectangle and records its object pointer; `redraw_round_lines_` `DESTROY_OBJECT_`s the previous
+  round's lines before drawing the new round's.
+- **The five rounds** (single-elim over 32 icons): **R1** = 16 pair boxes · **R2** = 8 boxes of 4 ·
+  **R3** = 4 boxes of 8 · **R4** = 2 boxes of 16 · **R5** = no lines.
+- **L-shaped group (R4, icons 17–32)**: row 3 is full-width (8 icons) but the center block beneath it
+  is narrower (4, centered), so a plain bounding box would spill into the side panels. `draw_tee_17_32_`
+  instead draws an 8-segment "T" outline — full-width across row 3, stepping inward to wrap the center
+  block — with all edges derived from `icon_coords` so it tracks any icon-position tuning.
 
 ---
 
@@ -462,9 +539,9 @@ the shared code; mitigate with the per-phase 12CB smoke test + overlap checker.
 
 ## Phase E — Cleanup (4 independent parts; all DONE — E.1/E.2 build-verified+needs HW test, E.3/E.4 HW-confirmed)
 
-> **E.1/E.2 were done with font strings, NOT textures** (user's choice — see below). The original
-> texture-injection workflow is preserved in `ClaudeInsertingTourneyMenuTextures.md` for reference
-> only (the "if we ever want real pixel-art banners" path); it is NOT what shipped.
+> **E.1/E.2 were done with font strings, NOT textures** (user's choice — see below). A
+> texture-injection route was considered but rejected because it would require regenerating
+> `roms/original.z64`; the font route avoids touching the base ROM entirely.
 
 ### E.1 — "Tournament" button label — DONE via font string (build-verified, needs HW test)
 **Why no texture:** every existing Remix CSS texture is a byte-offset into a base-ROM file (added
