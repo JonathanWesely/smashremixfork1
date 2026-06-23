@@ -3411,6 +3411,14 @@ scope TwelveCharBattle {
         beqz    t0, _end                    // if not started, return normally
         nop
 
+        // TOURNAMENT: each matchup is set up freely, so skip 12CB's "winner must keep their
+        // character" rule -- any non-eliminated character can be selected for any token. The
+        // eliminated-character block above still applies, so locked-out characters stay unselectable.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _end                // Tournament -> allow selecting any (live) character
+        nop
+
         // if the player won last match, make sure they can't select a different character
         jal     get_last_match_portrait_and_stocks_ // v0 = remaining stocks, v1 = portrait_id of last match
         nop
@@ -3835,6 +3843,14 @@ scope TwelveCharBattle {
         li      t0, twelve_cb_flag
         lw      t0, 0x0000(t0)              // t0 = 1 if 12cb mode
         beqz    t0, _end                    // if not 12cb mode, return normally
+        nop
+
+        // TOURNAMENT: always allow grabbing any token (including the CPU's) so each new matchup can
+        // be set up freely, exactly like before the first match. (Only 12CB keeps the CPU's character
+        // between games via the block below.)
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t6, VsRemixMenu.mode.TOURNEY
+        beq     t0, t6, _end                // Tournament -> allow pickup
         nop
 
         li      t0, config.status
