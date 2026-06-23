@@ -3179,6 +3179,7 @@ scope CharacterSelect {
         constant BONUS_BOOKEND(0x00003B28)
         constant RANDOM_BOOKEND(0x000053E8)
         constant RANDOM(0x000301F8 + 0x10)
+        constant PLACEHOLDER(RANDOM)            // Character.id.PLACEHOLDER (random) -> the random "?" icon
         // original
         constant MARIO(0x00001078)
         constant FOX(0x00002138)

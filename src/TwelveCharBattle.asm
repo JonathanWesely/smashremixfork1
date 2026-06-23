@@ -263,42 +263,40 @@ scope TwelveCharBattle {
         // custom p1/p2 tables when entering Tournament. Auto-filled roster (user can tweak):
         // base 12 + remix 12 + 8 extras. Slots 25-32 are the 8 "center" portraits.
         scope t {
-            // row 1
-            define slot_1(LUIGI)
-            define slot_2(MARIO)
-            define slot_3(DONKEY)
-            define slot_4(LINK)
-            define slot_5(SAMUS)
-            define slot_6(CAPTAIN)
-            define slot_7(NESS)
-            define slot_8(YOSHI)
-            // row 2
-            define slot_9(KIRBY)
-            define slot_10(FOX)
-            define slot_11(PIKACHU)
-            define slot_12(JIGGLYPUFF)
-            define slot_13(DRM)
-            define slot_14(GND)
-            define slot_15(YLINK)
-            define slot_16(FALCO)
-            // row 3
-            define slot_17(DSAMUS)
-            define slot_18(WARIO)
-            define slot_19(LUCAS)
-            define slot_20(BOWSER)
-            define slot_21(WOLF)
-            define slot_22(CONKER)
-            define slot_23(MTWO)
-            define slot_24(MARTH)
-            // center 8
-            define slot_25(SONIC)
-            define slot_26(SHEIK)
-            define slot_27(MARINA)
-            define slot_28(DEDEDE)
-            define slot_29(GOEMON)
-            define slot_30(BANJO)
-            define slot_31(CRASH)
-            define slot_32(PEACH)
+            // Tournament default roster: every slot starts as the RANDOM character (PLACEHOLDER),
+            // so the grid shows all "random" icons until the user edits slots to set up the bracket.
+            define slot_1(PLACEHOLDER)
+            define slot_2(PLACEHOLDER)
+            define slot_3(PLACEHOLDER)
+            define slot_4(PLACEHOLDER)
+            define slot_5(PLACEHOLDER)
+            define slot_6(PLACEHOLDER)
+            define slot_7(PLACEHOLDER)
+            define slot_8(PLACEHOLDER)
+            define slot_9(PLACEHOLDER)
+            define slot_10(PLACEHOLDER)
+            define slot_11(PLACEHOLDER)
+            define slot_12(PLACEHOLDER)
+            define slot_13(PLACEHOLDER)
+            define slot_14(PLACEHOLDER)
+            define slot_15(PLACEHOLDER)
+            define slot_16(PLACEHOLDER)
+            define slot_17(PLACEHOLDER)
+            define slot_18(PLACEHOLDER)
+            define slot_19(PLACEHOLDER)
+            define slot_20(PLACEHOLDER)
+            define slot_21(PLACEHOLDER)
+            define slot_22(PLACEHOLDER)
+            define slot_23(PLACEHOLDER)
+            define slot_24(PLACEHOLDER)
+            define slot_25(PLACEHOLDER)
+            define slot_26(PLACEHOLDER)
+            define slot_27(PLACEHOLDER)
+            define slot_28(PLACEHOLDER)
+            define slot_29(PLACEHOLDER)
+            define slot_30(PLACEHOLDER)
+            define slot_31(PLACEHOLDER)
+            define slot_32(PLACEHOLDER)
         }
     }
 
@@ -5855,8 +5853,8 @@ scope TwelveCharBattle {
     string_character_set_custom:; String.insert("Custom")
     string_best_character:; String.insert("Best Character")
     string_tkos:; String.insert("TKOs")
-    string_tournament_1:; String.insert("Tournament 1")
-    string_tournament_2:; String.insert("Tournament 2")
+    string_tournament_1:; String.insert("Retain Stocks")
+    string_tournament_2:; String.insert("Lose Stocks")
 
     // @ Description
     // Live pointer to the current "Tournament 1/2" string (for the CSS title label).

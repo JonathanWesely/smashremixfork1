@@ -137,6 +137,12 @@ scope VsRemixMenu {
         lw      t0, 0x0048(sp)              // t0 = button index (caller 0x0020)
         sw      t0, 0x0020(sp)              // stash index
 
+        // The label below is drawn with the Render custom font, but this menu never loads it (the
+        // other buttons are textures). Without this, the "Tournament" string renders against whatever
+        // font happens to still be resident, which a screen like Item Switch clobbers -> crash on
+        // re-entry. Load the font here so it's always valid (same call the CSS uses in game_setup_).
+        Render.load_font()
+
         // create the button object (group 4)
         or      a0, r0, r0                  // a0 = Global Object ID
         or      a1, r0, r0                  // a1 = no per-frame routine

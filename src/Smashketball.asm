@@ -1383,6 +1383,16 @@ scope Smashketball {
 
             _skip_to_end:
             OS.read_word(VsRemixMenu.vs_mode_flag, t5) // t5 = vs_mode_flag
+            // TOURNAMENT: the vanilla toggle just destroyed and re-created the top-left title banner
+            // (v0 is that new image object here). Hide it so toggling Retain/Lose Stocks doesn't
+            // redisplay the "12-Char. Battle"/"Free-For-All" mode image over our label. (The initial
+            // banner on CSS entry is hidden separately by TwelveCharBattle.hide_tourney_banner_.)
+            lli     t6, VsRemixMenu.mode.TOURNEY
+            bne     t5, t6, _skip_tourney_banner_hide
+            nop
+            lli     t6, 0x0205                  // render flags = hide
+            sh      t6, 0x0024(v0)              // hide the re-created banner
+            _skip_tourney_banner_hide:
             lli     v0, VsRemixMenu.mode.SMASHKETBALL
             beq     t5, v0, _do_skip            // Smashketball -> skip teams logic
             lli     v0, VsRemixMenu.mode.TOURNEY
