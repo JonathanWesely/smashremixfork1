@@ -2188,6 +2188,9 @@ scope TwelveCharBattle {
         lli     a0, VsRemixMenu.mode.TUG_OF_WAR
         beql    t0, a0, _default            // if Tug of War, play "Tug of War"
         lli     a0, FGM.announcer.css.TUG_OF_WAR
+        lli     a0, VsRemixMenu.mode.TOURNEY
+        beql    t0, a0, _return             // if Tournament, play the tournament announcer
+        lli     a0, FGM.announcer.css.TOURNAMENT
 
         li      t0, twelve_cb_flag
         lw      t0, 0x0000(t0)              // t0 = 1 if 12cb mode
@@ -5723,6 +5726,11 @@ scope TwelveCharBattle {
         nop
         Render.register_routine(update_tournament_type_pointer_)
         nop
+        // Force the placeholder "12-Char. Battle" header banner hidden every frame. hide_tourney_banner_
+        // only hooks the banner's creation instruction, which the initial CSS load doesn't pass through
+        // (so the banner flashes until the first redraw). This per-frame routine hides it from frame 1.
+        Render.register_routine(force_hide_tourney_banner_)
+        nop
         Render.draw_string_pointer(0x1E, GROUP_ALWAYS, tournament_type_pointer, Render.update_live_string_, 0x41D80000, 0x41C00000, 0xFFFFFFFF, 0x3F600000, Render.alignment.LEFT)
         _skip_tourney_label:
 
@@ -5873,6 +5881,32 @@ scope TwelveCharBattle {
         li      t0, tournament_type_pointer
         jr      ra
         sw      t1, 0x0000(t0)              // update pointer (delay slot)
+    }
+
+    // @ Description
+    // Per-frame routine (Tournament only): force the placeholder "12-Char. Battle" header banner
+    // hidden. The banner object pointer is saved by vanilla to the global at 0x8013BDB0.
+    // hide_tourney_banner_ sets the object's render flags (0x0205) AT CREATION, which works (the object
+    // is never added to the render list). But the initial CSS build creates the banner with the flag
+    // unset, and writing 0x24=0x0205 to an ALREADY-LIVE object does NOT remove it from the render list,
+    // so the banner stays visible until a redraw recreates+hides it. To hide a live object reliably we
+    // move it off-screen: the banner's display struct is at [obj+0x74], with x at +0x58 / y at +0x5C
+    // (vanilla sets x=27.0 there). Writing a far off-screen x every frame keeps it invisible regardless
+    // of the flag state. We also keep the flag write so a freshly-created banner is hidden immediately.
+    scope force_hide_tourney_banner_: {
+        li      t0, 0x8013BDB0              // global: header banner object pointer
+        lw      t0, 0x0000(t0)              // t0 = banner object (0 if none)
+        beqz    t0, _done                   // no banner yet -> skip
+        nop
+        lli     t1, 0x0205                  // render flags = hide
+        sh      t1, 0x0024(t0)              // hide the banner object (works for a freshly-created one)
+        lw      t2, 0x0074(t0)              // t2 = banner display struct
+        beqz    t2, _done                   // no display struct -> skip
+        lui     t1, 0x4496                  // (delay) 1200.0f = far off the right edge
+        sw      t1, 0x0058(t2)              // move banner x off-screen (hides a live object)
+        _done:
+        jr      ra
+        nop
     }
 
     // ============================================================================================

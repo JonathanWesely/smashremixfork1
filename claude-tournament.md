@@ -62,13 +62,24 @@ Buffer). `master` is the clean fallback. Build with the full sequence (`bass` �
   grid, and a dedicated cursor hit-test selects them there. See the Stage 2c section for the
   geometry constants.
 
-**Status: feature-complete and HW-confirmed.** The current `tourney-mode` build has been
-hardware-tested end to end: all 32 Tournament portraits show (24-slot grid + centered 4x2 block),
-all are selectable by both players, 12CB remains identical (no post-Tournament crash), E.3/E.4
-behave correctly (stats not corrupted; save-on-exit works), the font-string "Tournament" button +
-"Tournament 1/2" title render (E.1/E.2), the round-bracket overlay works for all 5 rounds with the
-icons aligned to the boxes, and matchup setup after a match is unrestricted (CPU token re-grab +
-free re-selection). See the **Feature summary** and **Round-bracket overlay** sections below.
+**Status: feature-complete and HW-confirmed. Tournament Mode is DONE.** The current `tourney-mode`
+build has been hardware-tested end to end: all 32 Tournament portraits show (24-slot grid + centered
+4x2 block), all are selectable by both players, 12CB remains identical (no post-Tournament crash),
+E.3/E.4 behave correctly (stats not corrupted; save-on-exit works), the font-string "Tournament"
+button + "Tournament 1/2" title render (E.1/E.2, including the initial-frame banner-flash fix), the
+round-bracket overlay works for all 5 rounds with the icons aligned to the boxes, and matchup setup
+after a match is unrestricted (CPU token re-grab + free re-selection). Opening Tournament also plays
+its own **distinct announcer voice** (see the **Tournament announcer sound** note below and the full
+`sound.md` log). See the **Feature summary** and **Round-bracket overlay** sections below.
+
+### Tournament announcer sound (DONE, HW-confirmed) — see `sound.md`
+Opening Tournament plays a distinct "open" announcer clip (`src/sounds/tournament.aifc`) instead of
+12CB's `TWELVECB`. Registered via `add_sound` in `src/FGM.asm` (FGM id `0x609`, constant
+`FGM.announcer.css.TOURNAMENT`) and played by a new Tournament branch in
+`TwelveCharBattle.update_announcer_on_entry_`. The `.aifc` was produced by a self-contained Python
+VADPCM codec, `scripts/vadpcm_encode.py` (no N64 SDK tools), then length-fixed (explicit
+`fgm_length`, since the auto formula assumes the reference files' inflated FORM size) and loudened
++5 dB (tanh soft-limit `louder` subcommand). Full design/debug log is in **`sound.md`**.
 
 **Resolved follow-ups (kept for history — all HW-confirmed):**
 1. **Phase B Stage 2b + 2c** — HW-confirmed: all 32 portraits show with the 8 extras as a centered
@@ -120,6 +131,18 @@ free re-selection). See the **Feature summary** and **Round-bracket overlay** se
     (`hide_tourney_banner_`) and results (`hide_tourney_results_banner_`) screens, and the
     repurposed "Tournament 1/2" font label (formerly the temp Phase D center label, now top-left,
     left-aligned) is the title. Results screen has no title text yet (possible follow-up).
+    - **E.2 initial-frame flash fix (DONE, HW-confirmed).** `hide_tourney_banner_` hooks the banner's
+      *creation* (`sw v0,0xBDB0(at)` at `0x80134518`) and sets render flags to hide — which only works
+      at creation (the object is then never added to the render list). But the **initial** CSS build
+      creates the banner with the flag unset, so "12-Char. Battle" showed until the first redraw (any
+      button press) recreated+hid it; writing `0x24=0x0205` to an *already-live* object does NOT pull
+      it from the render list. Fix: a per-frame routine `force_hide_tourney_banner_` (registered in
+      `setup_`, Tournament-only) that **moves the banner off-screen every frame** — the banner display
+      struct is at `[obj+0x74]`, x float at `+0x58` (vanilla sets `27.0`); writing a far off-screen x
+      (`1200.0`) reliably hides a live object. It also still writes the hide flag so a freshly-created
+      banner is hidden instantly. Banner object-pointer global = `0x8013BDB0`. (Disassembled from
+      `original.z64`; **the CSS header routine `0x80134xxx` segment delta is `0x80001D80`**, NOT the
+      `0x7FFE0E60` used for the `0x80137xxx` scoring overlay.)
   - HW-tunables: button label X/alignment/scale; CSS title X/Y/scale/color; the button string does
     not inherit the texture buttons' selected-highlight color swap.
   - **Post-HW tweaks (build-verified):** button label scale bumped +80% (`0x3F600000` → `0x3FC9999A`
@@ -639,4 +662,11 @@ step toward that separation.
   pseudo-op that can expand to 2 instructions) in a branch delay slot, and for two
   branches/jumps in a row.
 - When debugging "no effect", verify engine assumptions by **disassembling `original.z64`**
-  (RAM→ROM deltas in the `ssb64-rom-deltas` memory).
+  (RAM→ROM deltas in the `ssb64-rom-deltas` memory). Note deltas differ **per overlay** even for
+  nearby RAM: the CSS *header* routine at `0x80134xxx` uses delta `0x80001D80`, while the CSS
+  *scoring* code at `0x80137xxx` uses `0x7FFE0E60`. Derive the delta from a known
+  `OS.patch_start(rom, ram)` pair in that exact range, don't assume.
+- **Hiding a render object:** setting its render flags (`0x24 = 0x0205`) only takes effect **at
+  creation** (it keeps the object off the render list). Writing that flag to an **already-live**
+  object does nothing. To hide a live object reliably, move it off-screen (write a far x to its
+  display struct, `[obj+0x74]+0x58`) every frame — see `force_hide_tourney_banner_`.

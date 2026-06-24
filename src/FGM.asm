@@ -1836,6 +1836,7 @@ scope FGM {
     add_sound_advanced(TimerBackfireEnd, sounds/misc/dne_remit, sounds/misc/timer_fgm_microcode, 0x12, sounds/misc/timer_sfx_microcode, 0xD, OS.FALSE, 0, 0, 0, OS.FALSE)  // note: the sfx_microcode here is the generic sfx microcode that gets used by the VOICE type fgm
     add_fgm(DEATH, Crash/sounds/DEATH, 0x11, 0x498, -1, -1, -1) // note: the sfx_id here and the length in the microcode are hard coded based on Crash WOAH
     add_sound(sounds/stadium/PUMPED, SAMPLE_RATE_16000, FGM_TYPE_VOICE, 0, -1)
+    add_sound(sounds/tournament, SAMPLE_RATE_32000, FGM_TYPE_VOICE, 0, 224)  // Tournament-mode "open" announcer (added last so no existing FGM ids shift). Explicit length (~1.15s @ ~183 ticks/s): the auto -1 formula assumes the reference files' inflated FORM size + 16kHz, so it under-shoots here and cut playback to ~half.
 
     // This is always last
     write_sounds()
@@ -2011,6 +2012,7 @@ scope FGM {
             constant ALLSTAR(1014)
             constant HRC(1015)
             constant TWELVECB(1016)
+            constant TOURNAMENT(ORIGINAL_FGM_COUNT - 1 + new_fgm_count)  // auto-computed: tournament was add_sound'd last
             constant KOTH(775)
             constant SMASHKETBALL(776)
             constant TAG_TEAM(783)

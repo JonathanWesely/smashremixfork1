@@ -90,6 +90,53 @@ Tournament plays the new sound, 12cb still plays `TWELVECB`, and all other modes
    Smashketball / Tug of War unchanged.
 
 ## Status
-**Blocked on a valid VADPCM `src/sounds/tournament.aifc`.** The code changes above are ready to apply
-as soon as the file is correctly encoded. (Latest attempt was an AIFF-C with `NONE` compression —
-needs real VADPCM encoding.)
+**DONE — HW-confirmed.** Tournament plays its own announcer voice on open; it plays in full and at the
+desired (louder) level; 12CB and all other VS modes are unchanged. Unblocked by writing a
+self-contained Python VADPCM codec (`scripts/vadpcm_encode.py`) — no N64 SDK tools needed.
+(See the three sub-sections below for the two follow-up fixes after the first HW test: the half-clip
+length fix and the +5 dB loudness pass.)
+
+- Source audio was a 32 kHz mono 16-bit PCM `.wav` (the user's `TournamentVADPCM.aifc` was actually a
+  WAV, not VADPCM). The codec encodes it to a real AIFF-C/VADPCM file whose chunk framing byte-matches
+  `Twelve_Character_Battle.aifc` (codebook@0x70, SSND size@0xF4, frames@0x100, FORM size@0x4).
+- **Codec correctness was anchored empirically:** the decoder was validated against the shipped
+  reference sounds (they decode to smooth, ~0%-saturated speech). This revealed the predictor row
+  order — the SECOND stored codebook row is the response to the most-recent sample `l1`, the FIRST
+  to `l2` (`pred1 = book[p][1]`, `pred2 = book[p][0]`); the other order saturates/roughens.
+- The codebook is **reused from `Twelve_Character_Battle.aifc`** (same announcer-speech domain); no
+  custom `tabledesign` was needed — round-trip SNR is **43.8 dB** with the borrowed book.
+- Final asset: `src/sounds/tournament.aifc`, 32 kHz, 36848 samples / 2303 frames, registered with
+  `SAMPLE_RATE_32000`. Build prints `FGM_ID: 0x609 (1545)` for `sounds/tournament`, which is what
+  `FGM.announcer.css.TOURNAMENT` resolves to.
+- Code changes applied as described above (FGM.asm `add_sound` + `TOURNAMENT` constant;
+  TwelveCharBattle.asm `update_announcer_on_entry_` Tournament branch).
+- Verified: full build (`bass` → `chksum64` → `rn64crc`) succeeds and ROM is bootable; both CI lints
+  pass; `-d DEBUG` build + `overlapping_patches.py` shows only the 3 known pre-existing conflicts;
+  and HW-confirmed by the user (Tournament → new sound; 12CB → still `TWELVECB`; all other modes
+  unchanged).
+
+### Fix: playback was cutting off at ~half
+First HW test played only ~half the phrase. Cause: `add_sound` auto length (`fgm_length = -1`) is
+`SOUND_SIZE/177` read from the FORM-size word at `0x4`, but the reference `.aifc` files store an
+**inflated** FORM size there (≈ uncompressed PCM bytes, ~3.5× the real file size) and the `177`
+divisor is calibrated for 16 kHz. Our encoder writes the *truthful* FORM size and the sound is 32 kHz,
+so auto length came out 118 ticks ≈ 0.645 s of the 1.15 s clip (~56%). **Fix:** pass an explicit
+`fgm_length` (`224`, ≈1.15 s @ ~183 ticks/s with margin) in the tournament `add_sound` instead of
+`-1`. No re-encode needed; the audio file already holds the full clip. (Future note: any sound made by
+`scripts/vadpcm_encode.py` should use an explicit length, since its FORM size won't match the auto
+formula's expectation.)
+
+### Louder mix (+5 dB)
+The clip was raised ~+5 dB RMS (−14 → −9 dBFS) at the user's request. The per-sound FGM volume is
+already maxed in the microcode (`0xD5FF`), so loudness must come from the sample data. Used a tanh
+**soft limiter** (`louder` subcommand in `scripts/vadpcm_encode.py`, `drive=2.6`) which boosts the body
+of the clip while compressing the few peaks smoothly to full scale (no hard clipping); round-trip SNR
+stayed ~42.8 dB. To re-tune, re-run from the pristine pre-boost copy, e.g.
+`python scripts/vadpcm_encode.py louder <original.aifc> src/sounds/Twelve_Character_Battle.aifc src/sounds/tournament.aifc <drive>`
+(higher drive = louder + more compression; ~2.6 ≈ +5 dB).
+
+### Re-encoding the sound later
+To swap in different audio: drop a mono 16-bit PCM `.wav` and run
+`python scripts/vadpcm_encode.py encode <in.wav> src/sounds/Twelve_Character_Battle.aifc src/sounds/tournament.aifc 32000`
+(the 2nd arg supplies the codebook). The script prints round-trip SNR and verifies the header
+offsets. Then rebuild with the full `bass`→`chksum64`→`rn64crc` sequence.
