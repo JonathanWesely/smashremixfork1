@@ -233,11 +233,12 @@ so you can lay out and read the bracket.
 
 ---
 
-## Shuffle / random re-seed (TCB — build-verified, needs HW test)
+## Shuffle / random re-seed (TCB — DONE, HW-confirmed)
 
 Two clickable font buttons on the same row as the round button (`[Round 1] [Shuffle] [N]`, y≈186 above
 RESET) let players randomly re-seed the 32-slot bracket after laying out the roster. Tournament-only;
-12CB untouched. All in `src/TwelveCharBattle.asm`.
+12CB untouched. All in `src/TwelveCharBattle.asm`. (The "Round 1" label + its click region were later
+nudged left ~15px — X 136→121, click ulx 114→99 — to make room in the row; Shuffle/count unchanged.)
 
 - **State/data** (declared by `slot_count`, *before* `setup_` — `Render.draw_number` evaluates its
   pointer arg at macro-expansion time, so a forward label fails): `shuffle_count` (dw, 1..MAX_SLOTS,
@@ -262,7 +263,7 @@ RESET) let players randomly re-seed the 32-slot bracket after laying out the ros
 - No new `OS.patch_start` (pure free-region routines), so the overlap checker still shows only the 3
   known conflicts. Build clean; both linters pass.
 
-### Related re-seed / selection tweaks (build-verified, needs HW test)
+### Related re-seed / selection tweaks (DONE, HW-confirmed)
 - **RESET clears the grid to RANDOM.** `handle_reset_` (TCB) now, for Tournament only, loops all
   `MAX_SLOTS` slots and `set_portrait_(slot, port 0, Character.id.RANDOM /*0x1B = "?" icon*/)` before
   its existing `update_character_set_` re-render — so hitting RESET (which appears once a game starts)

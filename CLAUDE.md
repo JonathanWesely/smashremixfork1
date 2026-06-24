@@ -56,6 +56,14 @@ To hook into *existing* vanilla code, files use the `OS.patch_start(rom_origin, 
 
 Each gameplay feature, mode, or system is its own `src/*.asm` (e.g. `Hitstun.asm`, `AirDodge.asm`, `Toggles.asm`, `Stages.asm`, `Training.asm`). Most are independent and register themselves into the game via patches. `src/Toggles.asm` is the central registry for the in-game settings menu — most features expose a toggle there.
 
+#### Settings menu, profiles & sub-profiles (`src/Toggles.asm`)
+
+The settings menu is a linked list of `entry`/`entry_bool` items grouped into sections, each with a head (`head_remix_settings`, `head_gameplay_settings`, `head_music_settings`, `head_stage_settings`, …) listed in `profile_head_table`. Every `entry`/`entry_bool` bumps a global `num_toggles` and emits `TOGGLE_{n}_DEFAULT_{CE|TE|NE|JP}`; `profile_defaults_{CE|TE|NE|JP}` (`write_defaults_for`) is the full per-profile default array, **1:1 with the non-title entries in list order**.
+
+- **Global "Load Profile"** (`load_profile_`, first entry of Remix Settings): walks *all* section heads and writes the selected profile's `profile_defaults_*` into every toggle (skipping titles/inputs). The four built-in profiles are Community/Tournament/Netplay/Japanese; the readme has the full default tables.
+- **Scoped "Load Profile" (sub-profiles)** (`load_sub_profile_`): a "Load Profile:" entry at the top of a section that loads only that section's values from a small table of profile rows. Each row is usually a slice of the main defaults, e.g. `stage_profiles` = `profile_defaults_CE/TE/NE + (first_stage_toggle*4)` (+ custom rows). The handler walks from the entry to the section's end (`next == NULL`) writing each value. **To add a section sub-profile** (as done for **Gameplay**): insert the `entry("Load Profile:", …, load_sub_profile_, num_toggles, string_table_X_profile, …)` right after the section head, capture `evaluate first_X_toggle(num_toggles)` after it, add an `X_profiles` row table + a `string_table_X_profile`, and give `load_sub_profile_` a branch for that head (gameplay has no "Random …:" title, so it skips only one entry, not two). Giving the entry default `0` for all four profiles makes the global Load Profile leave the sub-selector on row 0.
+- The **Gameplay** sub-profile (added this way) has rows **Default** (the Community gameplay slice) and **Jonathan** (a custom 32-value set); see `gameplay_profiles` / `gameplay_profile_jonathan`.
+
 ### Characters
 
 Characters are the largest subsystem. `src/Character.asm` defines the `define_character(name, parent, ...)` macro: every added fighter is **cloned from a vanilla parent** (parent id must be ≤ 0xB) and overrides files, action arrays, and attributes. Character IDs are assigned dynamically as characters are defined.
