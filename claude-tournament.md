@@ -233,6 +233,47 @@ so you can lay out and read the bracket.
 
 ---
 
+## Shuffle / random re-seed (TCB — build-verified, needs HW test)
+
+Two clickable font buttons on the same row as the round button (`[Round 1] [Shuffle] [N]`, y≈186 above
+RESET) let players randomly re-seed the 32-slot bracket after laying out the roster. Tournament-only;
+12CB untouched. All in `src/TwelveCharBattle.asm`.
+
+- **State/data** (declared by `slot_count`, *before* `setup_` — `Render.draw_number` evaluates its
+  pointer arg at macro-expansion time, so a forward label fails): `shuffle_count` (dw, 1..MAX_SLOTS,
+  reset to `MAX_SLOTS` on every CSS entry) and `shuffle_temp` (`fill MAX_SLOTS`, scratch for the
+  permutation). `string_shuffle` lives by the round strings.
+- **Draw** (in `setup_`'s Tournament round-UI block): `Render.draw_string(string_shuffle, …)` +
+  `Render.draw_number(shuffle_count, Render.update_live_string_, …)` (live-updates from the word).
+  Button X/Y are HW-tunable (Shuffle ≈ X 184, count ≈ X 224, same y as Round).
+- **Click** (in `handle_custom_presses_`, chained off the round button's "not pressed" path so the
+  Tournament gate is shared): two more `CharacterSelect.check_press_` regions → `do_shuffle_` and
+  `cycle_shuffle_count_`. Regions are HW-tunable; keep them clear of the centered 4×2 block and RESET.
+- **`cycle_shuffle_count_`** (template = `cycle_round_`): `N = (N % MAX_SLOTS) + 1`; plays the click FGM
+  (`jal 0x800269C0; a0=0x9E`). The live `draw_number` reflects it.
+- **`do_shuffle_`**: copies `id_table[0..N-1]` (Tournament's shared `id_table_t`, via
+  `character_set_table[NUM_PRESETS].id_table`) into `shuffle_temp`, **Fisher-Yates** permutes it
+  (`Global.get_random_int_safe_(a0=i+1) → j∈[0,i]`; `s0..s2` hold loop state, preserved across the
+  call), then writes each slot back with `set_portrait_(a0=slot, a1=0, a2=char)` and re-renders via
+  `update_character_set_(a0=0, a1=FALSE, a2=TRUE)` (Tournament → `_portraits`) — the exact reuse
+  pattern from `handle_reset_`. Plain permutation (a char may keep its slot by chance; the guarantee is
+  the bijection). Setup-time action: it permutes only the grid's character assignments; per-slot
+  `stocks_by_portrait_id` is left alone.
+- No new `OS.patch_start` (pure free-region routines), so the overlap checker still shows only the 3
+  known conflicts. Build clean; both linters pass.
+
+### Related re-seed / selection tweaks (build-verified, needs HW test)
+- **RESET clears the grid to RANDOM.** `handle_reset_` (TCB) now, for Tournament only, loops all
+  `MAX_SLOTS` slots and `set_portrait_(slot, port 0, Character.id.RANDOM /*0x1B = "?" icon*/)` before
+  its existing `update_character_set_` re-render — so hitting RESET (which appears once a game starts)
+  also blanks every icon back to the random "?" for a fresh re-seed. 12CB's match-struct reset is
+  unchanged.
+- **Select by the selector's CENTER, not its right edge.** In the CSS cursor hit-test
+  (`CharacterSelect.asm`, the `twelve_cb_flag` path that adjusts `a1` before
+  `TwelveCharBattle.get_character_id_`), Tournament now shifts the hit point left by
+  `TwelveCharBattle.PORTRAIT_WIDTH / 2` (15px) so a press grabs the icon under the selector's center.
+  Gated to Tournament; 12CB selection is byte-identical. The 15px amount is HW-tunable.
+
 ## Gating model & key references
 
 - **Master switch:** `TwelveCharBattle.twelve_cb_flag` (TCB ~20). Set by the menu button's

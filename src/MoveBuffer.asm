@@ -74,6 +74,15 @@ scope MoveBuffer {
     // disrupt the shield->roll transition and yield a plain shield instead).
     constant ROLL_F(0x009C)
     constant ROLL_B(0x009D)
+    // Jump actions (Action.JumpSquat .. Action.JumpAerialB = 0x014-0x019:
+    // JumpSquat, ShieldJumpSquat, JumpF, JumpB, JumpAerialF, JumpAerialB). These
+    // are < ATTACK_THRESHOLD, so like rolls they need their own consumption check:
+    // a single C (jump) press would otherwise keep re-asserting after the jump came
+    // out and trigger a second (midair) jump. We only consume when a jump action is
+    // NEWLY produced (buf_action was not already a jump), so buffering a rising
+    // aerial / second jump THROUGH jumpsquat is preserved.
+    constant JUMP_MIN(0x0014)           // Action.JumpSquat
+    constant JUMP_COUNT(0x0006)         // JumpSquat..JumpAerialB (0x014-0x019), 6 ids
 
     // @ Description
     // Per-port buffer state. 16 bytes per port:
@@ -165,6 +174,20 @@ scope MoveBuffer {
         beq     t3, t9, _set_used          // RollB -> used
         nop
 
+        // a buffered input that NEWLY produces a jump action (JumpSquat..
+        // JumpAerialB) consumes the buffer, so one C press can't re-assert into a
+        // second (midair) jump. Gated on buf_action NOT already being a jump action,
+        // so buffering an aerial / 2nd jump THROUGH jumpsquat keeps working.
+        addiu   t9, t3, -JUMP_MIN          // t9 = action - 0x014
+        sltiu   t9, t9, JUMP_COUNT         // t9 = 1 if action in [0x014,0x019]
+        beqz    t9, _check_attack          // not a jump action -> normal checks
+        lw      t8, 0x0008(t2)             // (delay) t8 = buf_action
+        addiu   t8, t8, -JUMP_MIN          // t8 = buf_action - 0x014
+        sltiu   t8, t8, JUMP_COUNT         // t8 = 1 if buf_action already a jump action
+        beqz    t8, _set_used              // jump newly produced -> consume
+        nop
+
+        _check_attack:
         // used if isAttack && !isLanding && (action != buf_action || seen)
         beqz    t7, _inject                // not an attack -> not used
         nop

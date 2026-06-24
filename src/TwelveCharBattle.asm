@@ -43,6 +43,18 @@ scope TwelveCharBattle {
     slot_count:
     dw 24
 
+    // SHUFFLE (Tournament only): random re-seed of the grid's character assignments.
+    // shuffle_count = how many slots (from slot 1) to permute among themselves (1..MAX_SLOTS); reset to
+    // MAX_SLOTS on every CSS entry, cycled 1..MAX_SLOTS by the count button. Defined here (before
+    // setup_) because Render.draw_number evaluates its pointer arg at macro-expansion time.
+    OS.align(4)
+    shuffle_count:
+    dw MAX_SLOTS
+    // scratch buffer for the Fisher-Yates permutation (one char_id byte per slot).
+    shuffle_temp:
+    fill MAX_SLOTS
+    OS.align(4)
+
     macro define_match_struct() {
         define n(1)
         while {n} < 24 {
@@ -2660,6 +2672,25 @@ scope TwelveCharBattle {
         bnez    t3, _loop_2                 // loop over all games in match struct
         addiu   t0, t0, 0x0008              // move to next game
 
+        // TOURNAMENT: a RESET also clears the whole grid back to the RANDOM ("?") character icon, so
+        // the roster can be re-seeded from scratch. set_portrait_(port 0) edits the shared id_table_t;
+        // the update_character_set_ re-render below picks it up. 12CB keeps its match-struct behavior.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _skip_tourney_grid_reset
+        nop
+        lli     t3, 0x0000                  // t3 = slot (preserved across set_portrait_)
+        _tourney_grid_reset_loop:
+        or      a0, r0, t3                  // a0 = slot
+        lli     a1, 0x0000                  // a1 = port 0 (Tournament's shared grid)
+        jal     set_portrait_
+        lli     a2, Character.id.RANDOM     // a2 = random "?" char icon (delay slot)
+        addiu   t3, t3, 0x0001              // slot++
+        sltiu   t0, t3, MAX_SLOTS           // t0 = 1 if slot < MAX_SLOTS
+        bnez    t0, _tourney_grid_reset_loop
+        nop
+        _skip_tourney_grid_reset:
+
         lli     a0, 0x0000                  // a0 = port_id
         lli     a1, OS.FALSE                // don't increment
         jal     update_character_set_
@@ -3160,15 +3191,46 @@ scope TwelveCharBattle {
         lli     v1, VsRemixMenu.mode.TOURNEY
         bne     v0, v1, _skip_round_button  // not Tournament -> skip
         nop
-        lui     a1, 0x42E4                  // a1 = button ulx (114.0)
+        lui     a1, 0x42C6                  // a1 = button ulx (99.0) -- moved left ~half an icon (15px)
         lli     a2, 44                      // a2 = button width
+        lui     a3, 0x433A                  // a3 = button uly (186.0)
+        lli     t4, 12                      // t4 = button height
+        jal     CharacterSelect.check_press_ // v0 = 1 if cursor over the button
+        sw      t4, 0x0010(sp)              // 0x0010(sp) = button height
+        beqz    v0, _check_shuffle_button   // round not pressed -> check shuffle button
+        nop
+        jal     cycle_round_                // advance round + redraw lines
+        nop
+        b       _end
+        nop
+
+        // SHUFFLE button (just right of Round) -> randomly permute the first N grid characters.
+        // Still Tournament here (only reached via the round block, which gated TOURNEY above).
+        _check_shuffle_button:
+        lui     a1, 0x4320                  // a1 = button ulx (160.0)
+        lli     a2, 48                      // a2 = button width
+        lui     a3, 0x433A                  // a3 = button uly (186.0)
+        lli     t4, 12                      // t4 = button height
+        jal     CharacterSelect.check_press_ // v0 = 1 if cursor over the button
+        sw      t4, 0x0010(sp)              // 0x0010(sp) = button height
+        beqz    v0, _check_count_button     // not pressed -> check count button
+        nop
+        jal     do_shuffle_                 // permute first N characters + re-render
+        nop
+        b       _end
+        nop
+
+        // COUNT button (right of Shuffle) -> cycle N (1..MAX_SLOTS).
+        _check_count_button:
+        lui     a1, 0x4356                  // a1 = button ulx (214.0)
+        lli     a2, 24                      // a2 = button width
         lui     a3, 0x433A                  // a3 = button uly (186.0)
         lli     t4, 12                      // t4 = button height
         jal     CharacterSelect.check_press_ // v0 = 1 if cursor over the button
         sw      t4, 0x0010(sp)              // 0x0010(sp) = button height
         beqz    v0, _skip_round_button      // not pressed -> skip
         nop
-        jal     cycle_round_                // advance round + redraw lines
+        jal     cycle_shuffle_count_        // N = (N % MAX_SLOTS) + 1
         nop
         b       _end
         nop
@@ -5747,9 +5809,18 @@ scope TwelveCharBattle {
         li      t0, round_pointer
         li      t1, string_round_1
         sw      t1, 0x0000(t0)              // label shows "Round 1"
-        Render.draw_string_pointer(0x1E, GROUP_ALWAYS, round_pointer, Render.update_live_string_, 0x43080000, 0x433A0000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
+        Render.draw_string_pointer(0x1E, GROUP_ALWAYS, round_pointer, Render.update_live_string_, 0x42F20000, 0x433A0000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
         jal     draw_round_lines_           // draw Round 1's matchup lines
         nop
+
+        // SHUFFLE controls (same row as Round, just to its right): a "Shuffle" button that randomly
+        // permutes the first N grid characters, and a clickable count showing N. Reset N to MAX_SLOTS
+        // on entry. Clicks are handled in handle_custom_presses_. Coords are HW-tunable.
+        li      t0, shuffle_count
+        lli     t1, MAX_SLOTS
+        sw      t1, 0x0000(t0)              // default shuffle count = MAX_SLOTS on entry
+        Render.draw_string(0x1E, GROUP_ALWAYS, string_shuffle, Render.NOOP, 0x43380000, 0x433A0000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
+        Render.draw_number(0x1E, GROUP_ALWAYS, shuffle_count, Render.update_live_string_, 0x43600000, 0x433A0000, 0xFFFFFFFF, 0x3F600000, Render.alignment.CENTER)
         _skip_round_ui:
 
         // Reset button
@@ -5933,6 +6004,8 @@ scope TwelveCharBattle {
     OS.align(4)
     round_string_table:
     dw string_round_1, string_round_2, string_round_3, string_round_4, string_round_5
+
+    string_shuffle:; String.insert("Shuffle")
 
     // Center (x,y) of each of the 32 icons, in screen pixels. Icons are numbered 1-32 (see plan):
     // top grid rows 1-3 = icons 1-24 (left->right), center block rows 1-2 = icons 25-32. Stored as
@@ -6354,6 +6427,116 @@ scope TwelveCharBattle {
         lw      ra, 0x0004(sp)             // restore ra
         jr      ra
         addiu   sp, sp, 0x0010             // deallocate stack space
+    }
+
+    // @ Description
+    // SHUFFLE count button: cycle shuffle_count through 1..MAX_SLOTS (the live draw_number on the CSS
+    // updates automatically). Tournament only (only reachable from the Tournament click handler).
+    scope cycle_shuffle_count_: {
+        addiu   sp, sp,-0x0010             // allocate stack space
+        sw      ra, 0x0004(sp)             // save ra
+
+        li      t0, shuffle_count
+        lw      t1, 0x0000(t0)             // t1 = N
+        addiu   t1, t1, 0x0001             // N++
+        sltiu   t2, t1, MAX_SLOTS + 1      // t2 = 1 if N <= MAX_SLOTS
+        bnez    t2, _store
+        nop
+        lli     t1, 0x0001                 // wrap (MAX_SLOTS+1) -> 1
+        _store:
+        sw      t1, 0x0000(t0)             // save N
+
+        jal     0x800269C0                 // play click FGM
+        addiu   a0, r0, 0x009E             // a0 = FGM id
+
+        lw      ra, 0x0004(sp)             // restore ra
+        jr      ra
+        addiu   sp, sp, 0x0010             // deallocate stack space
+    }
+
+    // @ Description
+    // SHUFFLE button: randomly PERMUTE the characters in grid slots 0..N-1 (N = shuffle_count) among
+    // those same slots (a bijection -- Fisher-Yates), then re-render. Tournament only. Reuses
+    // set_portrait_ (per-slot edit; Tournament's port-0 custom table is the shared id_table_t) and
+    // update_character_set_ (re-render; jumps to _portraits for Tournament), like handle_reset_.
+    scope do_shuffle_: {
+        addiu   sp, sp,-0x0020             // allocate stack space
+        sw      ra, 0x0004(sp)             // save registers
+        sw      s0, 0x0008(sp)             // ~
+        sw      s1, 0x000C(sp)             // ~
+        sw      s2, 0x0010(sp)             // ~
+
+        li      t0, shuffle_count
+        lw      s0, 0x0000(t0)             // s0 = N
+        sltiu   t1, s0, 0x0001             // t1 = 1 if N < 1
+        bnez    t1, _ret                   // N < 1 -> nothing to do (shouldn't happen)
+        nop
+
+        // s1 = id_table for Tournament's shared grid (= character_set_table[NUM_PRESETS].id_table,
+        // i.e. id_table_t -- the same table set_portrait_(port 0) writes).
+        li      t0, character_set_table
+        addiu   t0, t0, NUM_PRESETS * 0x10 // port-0 (p1) custom set entry
+        lw      s1, 0x0000(t0)             // s1 = id_table
+
+        // copy current char_ids [0..N-1] -> shuffle_temp
+        li      s2, shuffle_temp
+        lli     t1, 0x0000                 // t1 = i
+        _copy:
+        addu    t2, s1, t1                 // &id_table[i]
+        lbu     t3, 0x0000(t2)             // t3 = id_table[i]
+        addu    t4, s2, t1                 // &shuffle_temp[i]
+        sb      t3, 0x0000(t4)             // shuffle_temp[i] = id
+        addiu   t1, t1, 0x0001             // i++
+        bne     t1, s0, _copy
+        nop
+
+        // Fisher-Yates: for i = N-1 downto 1: j = rand(0..i); swap temp[i], temp[j]
+        addiu   s1, s0, -0x0001            // s1 = i = N-1 (s1 reused as the FY index)
+        _fy:
+        blez    s1, _writeback             // i <= 0 -> done shuffling
+        nop
+        jal     Global.get_random_int_safe_ // v0 = j in [0, i]
+        addiu   a0, s1, 0x0001             // a0 = i+1 (delay slot)
+        li      t0, shuffle_temp
+        addu    t1, t0, s1                 // &temp[i]
+        addu    t2, t0, v0                 // &temp[j]
+        lbu     t3, 0x0000(t1)             // temp[i]
+        lbu     t4, 0x0000(t2)             // temp[j]
+        sb      t4, 0x0000(t1)             // temp[i] = temp[j]
+        sb      t3, 0x0000(t2)             // temp[j] = temp[i]
+        b       _fy
+        addiu   s1, s1, -0x0001            // i-- (delay slot)
+
+        _writeback:
+        // for slot = 0..N-1: set_portrait_(a0=slot, a1=0 port, a2=temp[slot])
+        lli     s1, 0x0000                 // s1 = slot
+        _wb:
+        li      t0, shuffle_temp
+        addu    t0, t0, s1                 // &temp[slot]
+        lbu     a2, 0x0000(t0)             // a2 = char_id
+        or      a0, r0, s1                 // a0 = slot
+        jal     set_portrait_
+        lli     a1, 0x0000                 // a1 = port 0 (delay slot)
+        addiu   s1, s1, 0x0001             // slot++
+        bne     s1, s0, _wb
+        nop
+
+        // re-render all portraits (Tournament -> _portraits)
+        lli     a0, 0x0000                 // a0 = port
+        lli     a1, OS.FALSE               // a1 = don't increment
+        jal     update_character_set_
+        lli     a2, OS.TRUE                // a2 = redraw (delay slot)
+
+        jal     0x800269C0                 // play click FGM
+        addiu   a0, r0, 0x009E             // a0 = FGM id
+
+        _ret:
+        lw      ra, 0x0004(sp)             // restore registers
+        lw      s0, 0x0008(sp)             // ~
+        lw      s1, 0x000C(sp)             // ~
+        lw      s2, 0x0010(sp)             // ~
+        jr      ra
+        addiu   sp, sp, 0x0020             // deallocate stack space
     }
 
     string_reset_line_1:;  String.insert("Game reset requested by  P.")

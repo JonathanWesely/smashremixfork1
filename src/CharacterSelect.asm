@@ -522,8 +522,18 @@ scope CharacterSelect {
         beqz    t0, _end                    // ...return
         lli     v0, Character.id.NONE       // v0 = ret = NONE
 
-        jal     TwelveCharBattle.get_character_id_
         addiu   a1, a1, (START_X - TOKEN_OFFSET_X) // a1 = xpos, unadjusted
+        // TOURNAMENT: select the icon under the SELECTOR'S CENTER, not its right edge -- shift the hit
+        // point left by half a portrait width. 12CB selection is unchanged. (Amount is HW-tunable.)
+        li      t0, VsRemixMenu.vs_mode_flag
+        lw      t0, 0x0000(t0)              // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        bne     t0, t1, _no_center_adjust   // not Tournament -> leave hit point at the right edge
+        nop
+        addiu   a1, a1, -(TwelveCharBattle.PORTRAIT_WIDTH / 2) // center instead of right edge
+        _no_center_adjust:
+        jal     TwelveCharBattle.get_character_id_
+        nop
         b       _end
         nop
 
