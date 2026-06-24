@@ -155,6 +155,22 @@ VADPCM codec, `scripts/vadpcm_encode.py` (no N64 SDK tools), then length-fixed (
   `handle_reset_`) looped a hardcoded 24 portraits (6×4), so slots 24–31 stayed darkened/locked on
   RESET. Fixed to loop the runtime `slot_count`/4 (24 for 12CB → unchanged; 32 for Tournament → all
   icons cleared).
+- **Leftover 12CB control legends on the Tournament hover indicator** — when holding a token over a
+  slot, `draw_custom_portrait_indicators_` (TCB ~5247) draws the on-hover control legend. It runs in
+  the "custom" character-set state, and Tournament IS custom (`character_set == NUM_PRESETS`), so it
+  was drawing the 12CB-only prompts whose *functions* are already disabled for Tournament (the
+  in-game cycler skips L set-all / D-pad randomize/copy / preset cycle). Removed the 5 unused visuals
+  for Tournament — **L : Set All**, **D-pad : Presets/Random/Copy** (legend strings + their button
+  icons), and the **3 yellow/white indicator rectangles** — while keeping the left/right arrows and
+  the **Z/R** scroll-prompt icons (the actual scroll control). Done with three `vs_mode_flag ==
+  TOURNEY` gates in the existing free-region routine (no new `OS.patch_start`): skip the **creation**
+  block (`_skip_extra_create`, jumps to the register-restore), skip those 5's **P2 X-position
+  adjustment** (`_skip_extra_adjust`), and skip their **teardown** (`_skip_extra_destroy`). Safe
+  because the arrows/Z/R live in a separate `0x0008` sibling chain that the main-object destroy still
+  cascades, and the removed objects' reference slots (`0x0030/0x0040/0x0044/0x0048/0x004C/0x0050/
+  0x0054` of the indicator object) are never written *or* read for Tournament. 12CB byte-identical.
+  Both linters pass; overlap checker shows only the 3 known conflicts; full build (bass → chksum64 →
+  rn64crc) clean.
 
 ---
 
