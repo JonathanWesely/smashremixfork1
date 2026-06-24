@@ -2070,13 +2070,20 @@ scope Toggles {
         addiu   sp, sp,-0x0010              // allocate stack space
         sw      ra, 0x0004(sp)              // save registers
 
-        // v0 = menu item
-        lw      t0, 0x001C(v0)              // t0 = next entry (title)
-        lw      t0, 0x001C(t0)              // t0 = next entry (first toggle)
+        // v0 = menu item (the Load Profile entry)
+        lw      t0, 0x001C(v0)              // t0 = next entry (gameplay: first toggle; music/stage: title)
         lw      t1, 0x0004(v0)              // t1 = profile to load
         li      t2, info                    // t2 = address of info
         lw      t2, 0x0000(t2)              // t2 = address of head
-        li      t3, head_music_settings     // t3 = head_music_settings
+
+        // Gameplay has no "Random ... Toggles:" title, so t0 is already the first toggle and we use
+        // the gameplay table. Music/stage have a title -> skip one more entry, then pick their table.
+        li      t3, head_gameplay_settings
+        li      t4, gameplay_profiles
+        beq     t2, t3, _begin              // gameplay -> first toggle already, use gameplay table
+        nop
+        lw      t0, 0x001C(t0)              // music/stage: skip the title to reach the first toggle
+        li      t3, head_music_settings
         li      t4, music_profiles
         beq     t2, t3, _begin              // if in music settings, use music table
         nop                                 // otherwise, use stage table
@@ -2416,6 +2423,12 @@ scope Toggles {
     // @ Description
     // Gameplay Toggles
     head_gameplay_settings:
+    // Gameplay-only "Load Profile" (Default / Jonathan). Default index 0 for every main profile, so the
+    // global Load Profile leaves this selector on "Default". Uses the shared load_sub_profile_ handler
+    // (which has a gameplay branch). first_gameplay_toggle is captured AFTER it so it indexes the real
+    // first gameplay toggle (Hitstun) in profile_defaults, like first_music_toggle / first_stage_toggle.
+    entry_load_profile_gameplay:;       entry("Load Profile:", Menu.type.INT, 0, 0, 0, 0, 0, 1, load_sub_profile_, num_toggles, string_table_gameplay_profile, OS.NULL, entry_hitstun)
+    evaluate first_gameplay_toggle(num_toggles)
     entry_hitstun:;                     entry("Hitstun", Menu.type.INT, OS.FALSE, OS.FALSE, OS.FALSE, OS.FALSE, 0, 1, OS.NULL, string_table_hitstun, OS.NULL, entry_hitlag)
     entry_hitlag:;                      entry("Hitlag", Menu.type.INT, OS.FALSE, OS.FALSE, OS.FALSE, OS.TRUE, 0, 4, OS.NULL, string_table_hitlag, OS.NULL, entry_di)
     entry_di:;                          entry("DI", Menu.type.INT, 0, 0, 0, 1, 0, 2, OS.NULL, string_table_di, OS.NULL, entry_japanese_sounds)
@@ -3076,6 +3089,32 @@ scope Toggles {
         dw stage_profile_defaults_{n}_string
         evaluate n({n} + 1)
     }
+
+    // Gameplay sub-profiles (mirrors stage_profiles, but for the Gameplay section).
+    // [0] Default = the Community gameplay slice of the full profile defaults (the values the main
+    // profiles use). [1] Jonathan = a custom set. load_sub_profile_ copies the chosen row into the
+    // gameplay toggles (Hitstun..Stopwatch Item), in order.
+    gameplay_profiles:
+    dw profile_defaults_CE + ({first_gameplay_toggle} * 4)   // [0] Default
+    dw gameplay_profile_jonathan                             // [1] Jonathan
+
+    string_gameplay_default:;  String.insert("Default")
+    string_gameplay_jonathan:; String.insert("Jonathan")
+    OS.align(4)
+    string_table_gameplay_profile:
+    dw string_gameplay_default
+    dw string_gameplay_jonathan
+
+    // 32 values in Hitstun..Stopwatch order (integer = index into each toggle's value table):
+    // Hitstun 0, Hitlag 3(ULTIMATE), DI 0, Jpn Sounds 0, Jpn Stun/Sleep 0, Momentum 0,
+    // ShieldStun 4(ULTIMATE), Z-Cancel 0, Move Buffer 9, Punish Failed ZC 0, Improved AI 1, Tripping 0,
+    // Rage 1(ULTIMATE), Footstool 1, Air Dodge 2(ULTIMATE), Jab Lock 0, Edge C-Jump 1, Perfect Shield 1,
+    // Parry 0, Spot Dodge 1, Fast Fall 1, Ledge Trump 1, Wall Tech 1, Charge Smash 1, Item Containers 0,
+    // Game Speed 1(1.2x), Special Zoom 0, BlastZone Warp 0, Single Button 0, All Items R Drop 0,
+    // Move Staling 3(STRICT), Stopwatch 0.
+    gameplay_profile_jonathan:
+    dw 0, 3, 0, 0, 0, 0, 4, 0, 9, 0, 1, 0, 1, 1, 2, 0
+    dw 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 3, 0
 
     profile_head_table:
     dw head_remix_settings
