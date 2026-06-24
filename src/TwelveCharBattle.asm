@@ -5358,6 +5358,16 @@ scope TwelveCharBattle {
         li      t0, 0x303030FF              // palette
         sw      t0, 0x0060(v0)              // set palette
 
+        // Tournament: skip the 12CB-only control legends (L: Set All, D-pad: Presets/Random/Copy)
+        // and their indicator rectangles -- those functions are disabled for Tournament, so the
+        // arrows + Z/R scroll prompts above are the only indicators we want. (Arrows/Z/R live in a
+        // separate 0x0008 sibling chain destroyed by the main-object teardown below, so skipping
+        // these here is safe.)
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _skip_extra_create
+        nop
+
         // Draw L button legend text
         lli     a0, 0x1C                    // room
         lli     a1, 0x16                    // group
@@ -5552,6 +5562,8 @@ scope TwelveCharBattle {
         lw      s1, 0x000C(sp)              // s1 = object reference
         lw      a0, 0x0000(s1)              // a0 = indicators object reference
         sw      v0, 0x0054(a0)              // save reference
+
+        _skip_extra_create:
         lw      ra, 0x0004(sp)              // restore registers
         lw      s0, 0x0008(sp)              // ~
         lw      s1, 0x000C(sp)              // ~
@@ -5577,6 +5589,12 @@ scope TwelveCharBattle {
         lw      t0, 0x0008(t0)              // t0 = R button image struct
         li      t1, 0x438AC000              // t1 = X position
         sw      t1, 0x0058(t0)              // save X position
+
+        // Tournament: the L/D-pad legends + rectangles were never created -- skip adjusting them.
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _skip_extra_adjust
+        nop
 
         lw      t0, 0x0030(a0)              // t0 = L button legend object
         lw      t0, 0x0030(t0)              // t0 = L button image struct
@@ -5604,6 +5622,7 @@ scope TwelveCharBattle {
         lw      t0, 0x0054(a0)              // t0 = dpad up (hold) rectangle object
         sw      t1, 0x0030(t0)              // save X position
 
+        _skip_extra_adjust:
         sw      r0, 0x0010(s1)              // reset timer to 0
 
         _update_display:
@@ -5633,6 +5652,13 @@ scope TwelveCharBattle {
         beqz    a0, _next                   // if there's not an object, skip destroying it
         nop
 
+        // Tournament: the L/D-pad legends + rectangles were never created -- skip destroying them
+        // (the main object teardown below still cascades the arrows/Z/R 0x0008 chain).
+        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        lli     t1, VsRemixMenu.mode.TOURNEY
+        beq     t0, t1, _skip_extra_destroy
+        nop
+
         jal     Render.DESTROY_OBJECT_      // destroy object
         lw      a0, 0x0054(a0)              // a0 = dpad up (hold) rectangle object
 
@@ -5660,6 +5686,7 @@ scope TwelveCharBattle {
         jal     Render.DESTROY_OBJECT_      // destroy object
         lw      a0, 0x0030(a0)              // a0 = update all string object
 
+        _skip_extra_destroy:
         lw      a0, 0x0000(s1)              // a0 = object address
         jal     Render.DESTROY_OBJECT_      // destroy object
         sw      r0, 0x0000(s1)              // clear out reference
