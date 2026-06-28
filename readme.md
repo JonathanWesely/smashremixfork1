@@ -922,3 +922,47 @@ These stages are set to On in the Semi-Competitive profile:
 - Spawned Fear
 - Smashville Remix
 - Big Snowman
+
+# JonathanW's additions
+The following features were added by JonathanW on top of the base Smash Remix mod.
+
+## Gameplay
+### Move Buffer
+- A Smash Ultimate–style input/move buffer. When you press an action button slightly before your character can act (for example during jumpsquat or landing lag), the press is remembered for a short window and the move comes out on the first frame the character can act.
+- Adjustable from 0 to 9 frames (0 = off). Located in Gameplay Settings next to Z-Cancel.
+- Buffers attacks, specials, grabs, shields, dodges, rolls and jumps, and replays the stick direction so directional moves (tilts, smashes, aerials, rolls) come out as intended.
+
+#### Toggle Name: _Move Buffer_
+
+### Gameplay Profile: Jonathan
+- Adds a "Load Profile:" selector at the top of Gameplay Settings with a custom **Jonathan** preset alongside **Default**.
+- Selecting a profile loads that curated set of Gameplay Settings values without touching the other settings sections.
+
+## VS Modes
+### Tournament Mode
+- A new VS mode (a tournament-focused extension of 12-Character Battle) for running a manually-arranged single-elimination bracket of 1v1 matches.
+- Features 32 distinct, selectable characters (a 24-slot grid plus a centered block of 8), each selectable by either player. Hold a character's selector token and hold Z/R to scroll that slot to any character.
+- Two stock formats, toggled with the top button:
+    - **Reset Stocks** (Tournament 1): every match starts surviving characters at full stocks.
+    - **Lose Stocks** (Tournament 2): survivors retain their remaining stocks between matches.
+- Losing all stocks eliminates a character — its slot darkens and locks (unselectable) for the rest of the session.
+- A clickable **Round 1–5** button draws white matchup-outline boxes between the icons so you can lay out and read the bracket.
+- A **Shuffle** button randomly re-seeds the roster, and RESET blanks the grid back to random "?" icons for a fresh seed.
+- Opening Tournament Mode plays its own distinct announcer voice.
+
+## Remix Settings
+### 12CB format
+- Controls whether a 12-Character Battle winner is locked to their character after a match. Only affects 12-Character Battle.
+- Available options are: 'Default', 'Winners Unlocked'
+    - 'Default' keeps the original behavior: after winning, a player is locked to their character until it is defeated.
+    - 'Winners Unlocked' lets either player pick up their selector and choose any non-eliminated character, even right after winning.
+
+#### Toggle Name: _12CB format_
+
+### 12CB stock format
+- Controls how stocks carry between 12-Character Battle matches. Only affects 12-Character Battle.
+- Available options are: 'Default', 'Reset Stocks'
+    - 'Default' keeps the original behavior: surviving characters retain their remaining stocks between matches.
+    - 'Reset Stocks' starts every match with all surviving characters at full stocks (like Tournament Mode's Reset Stocks format).
+
+#### Toggle Name: _12CB stock format_

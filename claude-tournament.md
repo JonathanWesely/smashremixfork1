@@ -187,6 +187,19 @@ VADPCM codec, `scripts/vadpcm_encode.py` (no N64 SDK tools), then length-fixed (
   so they were correct and unchanged. Tournament behavior unchanged (still only Z/R scroll); 12CB
   buttons work again. Both linters pass; overlap checker shows only the 3 known conflicts; full build
   (bass → chksum64 → rn64crc) clean.
+- **12CB custom-mode "Copy" (hold D-pad up) crashed (Phase B regression, HW-found)** — the Copy
+  control (`_copycat` → `_randomize` → `_peek`, TCB ~5015) reads the *other* player's character table
+  at a hardcoded **±0xDC** offset from the current player's `id_table` slot. `0xDC` was the
+  `id_table_p2 - id_table_p1` distance for **24-slot** custom tables, but Phase B grew the p1/p2 custom
+  tables to `MAX_SLOTS` (32) (`id_table` +8 bytes, `portrait_offset_table` +32 bytes), pushing the real
+  distance to **0x104** (+0x28). The stale `0xDC` read garbage character ids out of
+  `portrait_id_table_p1` (mostly `0xFF`) → out-of-bounds `portrait_offset_by_character_table` lookup →
+  wild portrait offset → crash. Fix: compute the offset from the labels —
+  `lli t3, id_table_p2 - id_table_p1` — so it self-corrects for any future table-size change (idiom
+  already used in this file at TCB ~4884). Copy direction (P1 reads P2 at +offset, P2 reads P1 at
+  −offset) was already correct; only the magnitude was stale. Verified the built ROM resolves the
+  offset to `0x104`. Both linters pass; overlap checker shows only the 3 known conflicts; full build
+  clean.
 
 ---
 
@@ -744,3 +757,56 @@ step toward that separation.
   creation** (it keeps the object off the render list). Writing that flag to an **already-live**
   object does nothing. To hide a live object reliably, move it off-screen (write a far x to its
   display struct, `[obj+0x74]+0x58`) every frame — see `force_hide_tourney_banner_`.
+
+---
+
+## 12CB-only Remix Settings toggles: "12CB format" & "12CB stock format" (+ Tournament label rename)
+
+Two new **Remix Settings** menu entries (added right after **BlastZone GFX**) make two previously
+hard-coded **12-Character Battle** behaviors optional. Both are **12CB-only** (Tournament reads
+`tournament_type`, regular VS never reaches these routines) and both default to option `0`
+("Default") in all four built-in profiles, so the **Community** profile sets both to Default — i.e.
+out-of-box 12CB is unchanged. Build-verified (bass → chksum64 → rn64crc clean; both linters pass;
+overlap checker shows only the 3 known conflicts — all edits are in free-region routines, no new
+`OS.patch_start`). Needs HW test.
+
+### Menu wiring (`src/Toggles.asm`)
+- Two 2-option string tables (`string_table_12cb_format` = Default / Winners Unlocked;
+  `string_table_12cb_stock_format` = Default / Reset Stocks), placed by `string_table_blastzone_gfx`.
+- Two `entry(...)` rows (`entry_12cb_format`, `entry_12cb_stock_format`) inserted after
+  `entry_blastzone_gfx` (repointing its `next`), **before** the `evaluate num_remix_toggles(...)`
+  line so they count in the remix section. `max = 1` (2 options), defaults `0,0,0,0`. The `entry`
+  macro auto-bumps `num_toggles` and emits the per-profile defaults; `write_defaults_for` keeps
+  `profile_defaults_*` 1:1, and the section sub-profile captures (`first_gameplay/music/stage_toggle`)
+  are relative to `num_toggles`, so they shift with the +2 automatically. Runtime value read at
+  `Toggles.entry_12cb_format + 0x4` / `Toggles.entry_12cb_stock_format + 0x4`.
+
+### "12CB format" — Default (winner locked) / Winners Unlocked (`src/TwelveCharBattle.asm`)
+After a 12CB match, the vanilla rule locks a winner to their character (can't reselect a different
+one until it's defeated). "Winners Unlocked" lifts that, exactly like Tournament's free setup. Done
+by adding a 12CB toggle bypass **right after** each routine's existing `vs_mode_flag == TOURNEY`
+bypass (so both Tournament and 12CB-Winners-Unlocked skip the rule):
+- `prevent_defeated_char_select_` (the winner-must-keep-character check) — `bnez t0, _end` on the
+  toggle, after the TOURNEY `beq`. The eliminated-character block *above* the bypass is untouched, so
+  dead characters stay unselectable in both modes.
+- `prevent_token_pickup_` — same bypass, so a player can also re-grab a CPU's token. Both sites are
+  past the `twelve_cb_flag` + not-TOURNEY checks, so the toggle is consulted for 12CB only.
+
+### "12CB stock format" — Default (retain) / Reset Stocks (`src/TwelveCharBattle.asm`)
+Vanilla 12CB **retains** survivors' remaining stocks between matches (carry-over). "Reset Stocks"
+makes 12CB behave like **Tournament 1** (every match starts survivors at full). Both stock routines
+are gated on the same toggle so they agree (refill at match-end **and** use the per-portrait full
+count next match):
+- `set_initial_stock_count_` — restructured the TOURNEY check so 12CB consults the toggle: Default →
+  `_use_remaining_stocks` (carry-over, preserves `t8` = remaining stocks); Reset → `_get_portrait_
+  stock_count` (full). Tournament keeps its `_check_tournament_stock` T1/T2 path.
+- `update_stocks_remaining_` — same restructure: on elimination, Default → `_end` (no reset); Reset →
+  `_do_t1_refill` (the existing survivor-refill loop, which loops `slot_count` = 24 for 12CB and skips
+  `0xFF` eliminated slots). Tournament keeps its `_check_tournament_reset` path.
+
+### Tournament stock-mode label rename
+`string_tournament_1` "Retain Stocks" → **"Reset Stocks"**. This live CSS label is shown for
+**Tournament 1**, whose behavior is reset-to-full each match, so the old "Retain Stocks" was inverted;
+"Reset Stocks" is accurate and matches the new 12CB "Reset Stocks" option. (`string_tournament_2`
+stays "Lose Stocks" for Tournament 2 = retain.) Referenced only by label, so the length change is
+safe.
