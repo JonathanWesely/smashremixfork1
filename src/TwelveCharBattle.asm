@@ -5012,9 +5012,10 @@ scope TwelveCharBattle {
         nop
 
         _peek:
-        lli     t3, 0xDC                    // offset to other player's table
-        bnezl   t2, pc() + 8                // if player 2, flip offset to -0xDC
-        sub     t3, r0, t3                  // t3 = -0xDC
+        lli     t3, id_table_p2 - id_table_p1 // offset to other player's table (computed; was hardcoded
+                                            // 0xDC before Phase B grew the p1/p2 custom tables to MAX_SLOTS)
+        bnezl   t2, pc() + 8                // if player 2, flip offset (copy P1 instead of P2)
+        sub     t3, r0, t3                  // t3 = -offset
         addu    t4, t1, t3                  // t4 = address of corresponding slot in other player's table
         lbu     v0, 0x0000(t4)              // v0 = character id to reference
         nop
