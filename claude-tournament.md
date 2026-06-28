@@ -171,6 +171,22 @@ VADPCM codec, `scripts/vadpcm_encode.py` (no N64 SDK tools), then length-fixed (
   0x0054` of the indicator object) are never written *or* read for Tournament. 12CB byte-identical.
   Both linters pass; overlap checker shows only the 3 known conflicts; full build (bass → chksum64 →
   rn64crc) clean.
+- **12CB custom-mode L/D-pad buttons went dead (register clobber, HW-found)** — companion bug to the
+  legend fix above. The Tournament gate added to the press handler `handle_custom_presses_` (TCB
+  ~4796) read `vs_mode_flag` into **`t0`**, but `t0` already held the **character-set index**
+  (`NUM_PRESETS + port`, set at TCB ~4771) that every action path consumes — `_do_update`/`_update_all`
+  (`sll t0,t0,4` to index `character_set_table`), `_randomize` (~4986), `_preset` (~4953). Tournament
+  branches to `_end` before using `t0` so it was unaffected, but the **12CB fall-through** then indexed
+  `character_set_table` with the flag value (`1`) instead of the custom index → **L : Set All / D-pad
+  Random/Copy/Presets operated on the wrong table and appeared dead** (Z/R per-slot scroll still
+  worked; the legends still drew because `draw_custom_portrait_indicators_` is a separate routine that
+  doesn't touch `t0` — matching the exact symptom "legends show, buttons dead"). Fix: read the flag
+  into a free scratch register (`t0` → **`t9`**) in that one gate so `t0` survives for the 12CB action
+  paths; `t1` (the `TOURNEY` constant holder) is reloaded immediately after, so it stays safe. The
+  three *visual* gates (5366/5594/5657) and the mirror gate (4908) don't depend on a pre-gate register,
+  so they were correct and unchanged. Tournament behavior unchanged (still only Z/R scroll); 12CB
+  buttons work again. Both linters pass; overlap checker shows only the 3 known conflicts; full build
+  (bass → chksum64 → rn64crc) clean.
 
 ---
 

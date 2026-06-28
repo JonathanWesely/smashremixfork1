@@ -4793,9 +4793,9 @@ scope TwelveCharBattle {
         // supported. Skip the 12CB extras (L = set-all, D-pad down = randomize, hold D-pad up = copy,
         // tap D-pad up = preset cycle); they assume per-player 24-slot half-grids and would corrupt
         // the shared 32-distinct grid.
-        OS.read_word(VsRemixMenu.vs_mode_flag, t0) // t0 = vs_mode_flag
+        OS.read_word(VsRemixMenu.vs_mode_flag, t9) // t9 = vs_mode_flag (don't clobber t0 = char-set index)
         lli     t1, VsRemixMenu.mode.TOURNEY
-        beq     t0, t1, _end                // Tournament -> no extras, only Z/R scroll
+        beq     t9, t1, _end                // Tournament -> no extras, only Z/R scroll
         nop
 
         lw      t1, 0x004C(sp)              // t1 = input struct
