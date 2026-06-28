@@ -1590,6 +1590,27 @@ scope Toggles {
     OS.align(4)
 
     // @ Description
+    // 12CB format strings (Default = winner locked to character; Winners Unlocked = free reselect
+    // after a win). Read 12CB-only by TwelveCharBattle.prevent_defeated_char_select_/prevent_token_pickup_.
+    string_12cb_format_default:;  String.insert("Default")
+    string_12cb_format_unlocked:; String.insert("Winners Unlocked")
+    OS.align(4)
+    string_table_12cb_format:
+    dw string_12cb_format_default
+    dw string_12cb_format_unlocked
+
+    // @ Description
+    // 12CB stock format strings (Default = retain remaining stocks between matches; Reset Stocks =
+    // reset survivors to full each match, Tournament-1 style). Read 12CB-only by
+    // TwelveCharBattle.set_initial_stock_count_/update_stocks_remaining_.
+    string_12cb_stock_default:; String.insert("Default")
+    string_12cb_stock_reset:;   String.insert("Reset Stocks")
+    OS.align(4)
+    string_table_12cb_stock_format:
+    dw string_12cb_stock_default
+    dw string_12cb_stock_reset
+
+    // @ Description
     // Pokemon Stadium Announcer strings
     announcer_mode_pokemon:; db "STADIUM", 0x00
     announcer_mode_all:; db "ALL STAGES", 0x00
@@ -2414,7 +2435,9 @@ scope Toggles {
     entry_pk_thunder_reflect_crash_fix:;entry_bool("PK Thunder Reflect Crash Fix", OS.TRUE, OS.TRUE, OS.TRUE, OS.TRUE, entry_flash_guard)
     entry_flash_guard:;                 entry_bool("Flash Guard", OS.FALSE, OS.FALSE, OS.FALSE, OS.FALSE, entry_screenshake)
     entry_screenshake:;                 entry("Screenshake", Menu.type.INT, OS.FALSE, OS.FALSE, OS.FALSE, OS.FALSE, 0, 2, OS.NULL, string_table_screenshake, OS.NULL, entry_blastzone_gfx)
-    entry_blastzone_gfx:;               entry("BlastZone GFX", Menu.type.INT, 0, 0, 0, 0, 0, 2, OS.NULL, string_table_blastzone_gfx, OS.NULL, OS.NULL)
+    entry_blastzone_gfx:;               entry("BlastZone GFX", Menu.type.INT, 0, 0, 0, 0, 0, 2, OS.NULL, string_table_blastzone_gfx, OS.NULL, entry_12cb_format)
+    entry_12cb_format:;                 entry("12CB format", Menu.type.INT, 0, 0, 0, 0, 0, 1, OS.NULL, string_table_12cb_format, OS.NULL, entry_12cb_stock_format)
+    entry_12cb_stock_format:;           entry("12CB stock format", Menu.type.INT, 0, 0, 0, 0, 0, 1, OS.NULL, string_table_12cb_stock_format, OS.NULL, OS.NULL)
 
     evaluate num_remix_toggles(num_toggles)
     evaluate remix_toggles_block_size(block_size)

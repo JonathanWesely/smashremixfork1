@@ -3482,6 +3482,13 @@ scope TwelveCharBattle {
         beq     t0, t1, _end                // Tournament -> allow selecting any (live) character
         nop
 
+        // 12CB "Winners Unlocked" format: same freedom as Tournament -- the winner may select any
+        // live character. (Default keeps the vanilla "winner must keep their character" rule below.)
+        // Only reached for 12CB here (twelve_cb_flag set + not Tournament), so this is 12CB-only.
+        OS.read_word(Toggles.entry_12cb_format + 0x4, t0) // t0 = 0 = Default (locked), 1 = Winners Unlocked
+        bnez    t0, _end                    // Winners Unlocked -> allow selecting any live character
+        nop
+
         // if the player won last match, make sure they can't select a different character
         jal     get_last_match_portrait_and_stocks_ // v0 = remaining stocks, v1 = portrait_id of last match
         nop
@@ -3916,6 +3923,13 @@ scope TwelveCharBattle {
         beq     t0, t6, _end                // Tournament -> allow pickup
         nop
 
+        // 12CB "Winners Unlocked" format: allow grabbing any token (incl. the CPU's) like Tournament,
+        // so a new matchup can be set up freely after a win. (Default keeps the vanilla lock below.)
+        // Only reached for 12CB here (twelve_cb_flag set + not Tournament).
+        OS.read_word(Toggles.entry_12cb_format + 0x4, t0) // t0 = 0 = Default (locked), 1 = Winners Unlocked
+        bnez    t0, _end                    // Winners Unlocked -> allow pickup
+        nop
+
         li      t0, config.status
         lw      t0, 0x0000(t0)              // t0 = battle status
         beqz    t0, _end                    // if not started, return normally
@@ -4004,8 +4018,17 @@ scope TwelveCharBattle {
         // count (fall through to the bgtz below).
         OS.read_word(VsRemixMenu.vs_mode_flag, t7) // t7 = vs_mode_flag
         lli     t9, VsRemixMenu.mode.TOURNEY
-        bne     t7, t9, _use_remaining_stocks // not Tournament -> keep remaining
+        beq     t7, t9, _check_tournament_stock // Tournament -> use tournament_type (T1/T2) logic below
         nop
+        // 12CB: the "12CB stock format" toggle picks the behavior (Default = retain remaining stocks,
+        // Reset Stocks = full each match like Tournament 1). 12CB-only (we already know not Tournament).
+        OS.read_word(Toggles.entry_12cb_stock_format + 0x4, t7) // t7 = 0 = Default (retain), 1 = Reset Stocks
+        beqz    t7, _use_remaining_stocks   // Default -> keep remaining (vanilla 12CB)
+        nop
+        b       _get_portrait_stock_count   // Reset Stocks -> full stocks via portrait count
+        lbu     t8, 0x000B(a0)              // t8 = current match portrait_id (delay slot)
+
+        _check_tournament_stock:
         OS.read_word(tournament_type, t7)   // t7 = tournament_type
         bnez    t7, _use_remaining_stocks   // Tournament 2 -> retain remaining
         nop
@@ -5960,7 +5983,7 @@ scope TwelveCharBattle {
     string_character_set_custom:; String.insert("Custom")
     string_best_character:; String.insert("Best Character")
     string_tkos:; String.insert("TKOs")
-    string_tournament_1:; String.insert("Retain Stocks")
+    string_tournament_1:; String.insert("Reset Stocks")
     string_tournament_2:; String.insert("Lose Stocks")
 
     // @ Description
@@ -6778,11 +6801,22 @@ scope TwelveCharBattle {
         nop
         OS.read_word(VsRemixMenu.vs_mode_flag, t1)
         lli     t2, VsRemixMenu.mode.TOURNEY
-        bne     t1, t2, _end                // not Tournament
+        beq     t1, t2, _check_tournament_reset // Tournament -> use tournament_type (T1/T2) logic
         nop
+        // 12CB: the "12CB stock format" toggle picks the behavior (Default = retain remaining stocks,
+        // Reset Stocks = refill survivors to full like Tournament 1). 12CB-only (not Tournament here).
+        OS.read_word(Toggles.entry_12cb_stock_format + 0x4, t1) // t1 = 0 = Default (retain), 1 = Reset Stocks
+        beqz    t1, _end                    // Default -> retain remaining (no reset)
+        nop
+        b       _do_t1_refill               // Reset Stocks -> refill survivors to full
+        nop
+
+        _check_tournament_reset:
         OS.read_word(tournament_type, t1)
         bnez    t1, _end                    // Tournament 2 -> retain, no reset
         nop
+
+        _do_t1_refill:
         li      t1, config.stocks_by_portrait_id
         li      t3, config.num_stocks
         lw      t3, 0x0000(t3)              // t3 = full stock count
