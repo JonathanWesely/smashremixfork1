@@ -46,7 +46,19 @@ include "Joypad.asm"
 //   of an attack/special (e.g. DK's Giant Punch), unlike the earlier version
 //   which cleared whenever action >= 0xA6. Rolls (RollF/RollB, < 0xA6) get an
 //   explicit "used" check so the buffer stops re-injecting once a sideways dodge
-//   comes out.
+//   comes out. Item pickups (LightItemPickup 0x64 / HeavyItemPickup 0x65, < 0xA6)
+//   also get an explicit "used" check, otherwise the A that grabbed the item keeps
+//   re-asserting and immediately throws it once the item is in hand.
+//
+// Smash buffering:
+//   The engine distinguishes a smash from a tilt by whether the control stick
+//   CROSSED the neutral zone this frame (current stick 0x01C2/0x01C3 vs the
+//   previous frame's stick 0x01C4/0x01C5) - a fresh flick past the deadzone is a
+//   smash, a sustained deflection is a tilt/dash. Replaying the peak stick every
+//   frame makes previous == current, so a buffered smash used to degrade into a
+//   tilt. When the buffered input is an A press at a near-max deflection, the
+//   inject step zeroes the previous-frame stick so every frame looks like a fresh
+//   flick and the smash comes out on the first actionable frame.
 //
 // Notes:
 //   - Only pressed buttons + stick are replayed; the held mask (0x01BC) is left
@@ -74,6 +86,13 @@ scope MoveBuffer {
     // disrupt the shield->roll transition and yield a plain shield instead).
     constant ROLL_F(0x009C)
     constant ROLL_B(0x009D)
+    // Item pickup actions (Action.LightItemPickup / Action.HeavyItemPickup).
+    // Both are < ATTACK_THRESHOLD, so like rolls they need their own consumption
+    // check: the A press that grabs the item is buffered, and once the item is in
+    // hand the re-asserted A immediately throws it. Consuming on the pickup action
+    // stops the re-assertion so you just grab the item.
+    constant LIGHT_ITEM_PICKUP(0x0064)
+    constant HEAVY_ITEM_PICKUP(0x0065)
     // Jump actions (Action.JumpSquat .. Action.JumpAerialB = 0x014-0x019:
     // JumpSquat, ShieldJumpSquat, JumpF, JumpB, JumpAerialF, JumpAerialB). These
     // are < ATTACK_THRESHOLD, so like rolls they need their own consumption check:
@@ -83,6 +102,21 @@ scope MoveBuffer {
     // aerial / second jump THROUGH jumpsquat is preserved.
     constant JUMP_MIN(0x0014)           // Action.JumpSquat
     constant JUMP_COUNT(0x0006)         // JumpSquat..JumpAerialB (0x014-0x019), 6 ids
+
+    // Smash detection. The engine reads a smash (vs tilt) when the control stick
+    // CROSSES the neutral zone this frame: it compares the current stick
+    // (0x01C2/0x01C3) against the PREVIOUS frame's stick (0x01C4/0x01C5, saved at
+    // the top of ftMainProcUpdate) and fires when the previous value was inside the
+    // +/-0x14 deadzone and the current value is outside it (vanilla routine at
+    // 0x8014_95D4). Because the buffer replays the PEAK stick every frame,
+    // previous == current, so the crossing never happens and a buffered smash
+    // degrades into a tilt/dash. When the buffered input is an A press with a
+    // near-max deflection we zero the previous-frame stick each inject frame so it
+    // looks like a fresh flick (this is exactly the condition the dpad Smash macro
+    // relies on: a fresh crossing with the stick at max). This threshold separates
+    // a smash-level deflection from a tilt (the dpad tilt macro uses 0x28, the smash
+    // macro 0x50); HW-tunable.
+    constant SMASH_STICK_THRESHOLD(0x0040)
 
     // @ Description
     // Per-port buffer state. 16 bytes per port:
@@ -174,6 +208,14 @@ scope MoveBuffer {
         beq     t3, t9, _set_used          // RollB -> used
         nop
 
+        // an item pickup consumes the buffer immediately, so the A press that
+        // grabbed the item doesn't re-assert and throw it once it's in hand.
+        lli     t9, LIGHT_ITEM_PICKUP      // ~
+        beq     t3, t9, _set_used          // LightItemPickup -> used
+        lli     t9, HEAVY_ITEM_PICKUP      // (delay slot) HeavyItemPickup
+        beq     t3, t9, _set_used          // HeavyItemPickup -> used
+        nop
+
         // a buffered input that NEWLY produces a jump action (JumpSquat..
         // JumpAerialB) consumes the buffer, so one C press can't re-assert into a
         // second (midair) jump. Gated on buf_action NOT already being a jump action,
@@ -248,6 +290,39 @@ scope MoveBuffer {
         sb      t9, 0x01C2(a2)             // replay peak stick X
         lb      t9, 0x0005(t2)             // ~
         sb      t9, 0x01C3(a2)             // replay peak stick Y
+
+        // --- smash freshness ---
+        // If the buffered input is an A press with a near-max stick deflection
+        // (i.e. a smash), zero the previous-frame stick (0x01C4/0x01C5) so the
+        // engine's fresh-crossing smash detector fires on whatever frame the
+        // character becomes actionable. Without this the held peak stick reads as a
+        // sustained deflection -> tilt/dash, never a smash. Non-smash inputs (no A,
+        // or below the smash deflection threshold) are left untouched so tilts,
+        // rolls, aerials and jumps keep replaying exactly as before.
+        lhu     t9, 0x0000(t2)             // t9 = buffered mask
+        andi    t9, t9, Joypad.A           // A buffered?
+        beqz    t9, _inject_timer          // no A -> not a smash
+        nop
+        lb      t9, 0x0004(t2)             // t9 = stored (peak) stick X
+        sra     at, t9, 31                 // ~
+        xor     t9, t9, at                 // ~
+        subu    t9, t9, at                 // t9 = |stored X|
+        sltiu   at, t9, SMASH_STICK_THRESHOLD  // at = 1 if |X| < threshold
+        beqz    at, _force_fresh           // |X| >= threshold -> smash
+        nop
+        lb      t9, 0x0005(t2)             // t9 = stored (peak) stick Y
+        sra     at, t9, 31                 // ~
+        xor     t9, t9, at                 // ~
+        subu    t9, t9, at                 // t9 = |stored Y|
+        sltiu   at, t9, SMASH_STICK_THRESHOLD  // at = 1 if |Y| < threshold
+        bnez    at, _inject_timer          // both axes below threshold -> not a smash
+        nop
+
+        _force_fresh:
+        sb      r0, 0x01C4(a2)             // previous stick X = neutral (fake fresh flick)
+        sb      r0, 0x01C5(a2)             // previous stick Y = neutral
+
+        _inject_timer:
         lb      t9, 0x0002(t2)             // timer
         addiu   t9, t9, -0x0001            // timer--
         sb      t9, 0x0002(t2)             // store updated timer
